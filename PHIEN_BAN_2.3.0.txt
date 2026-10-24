@@ -1,0 +1,14 @@
+GHI ÂM ZALO PC — 2.3.0
+
+• Bấm chọn bản ghi để nghe trực tiếp trong ứng dụng; Phát / Tạm dừng, Dừng nghe và kéo thanh tua.
+• Thanh phát và các nút không bị danh sách bản ghi đẩy ra ngoài cửa sổ.
+• Khi bắt đầu thu cuộc gọi, tự dừng nghe lại; chỉ nghe lại khi đã thu và lưu xong.
+• Giữ nguyên phiên thu khi cửa sổ đổ chuông chuyển sang cửa sổ cuộc gọi đã bắt máy.
+• Khi nhận diện được tên người gọi, cập nhật tên file và giữ giờ bắt đầu thu ban đầu.
+• Có tín hiệu kết thúc rõ ràng: dừng và lưu ngay. Nếu cửa sổ chỉ biến mất, chờ tối đa khoảng 5 giây để phân biệt chuyển cửa sổ với kết thúc cuộc gọi.
+• Sửa lỗi Tcl khi thoát từ menu khay hệ thống.
+
+Cập nhật: chọn Thoát ứng dụng trong menu khay của bản cũ, rồi mở shortcut Ghi Âm Zalo PC trên Desktop. Tiêu đề phải hiển thị 2.3.0.
+Các bản ghi cũ được giữ nguyên; các file đã tách từ trước không tự ghép lại.
+
+Kiểm chứng: 57 kiểm thử tự động; mô phỏng đổi cửa sổ, kết thúc cuộc gọi, khác người gọi; phát/tạm dừng/tua MP3 và WAV im lặng với tên tiếng Việt qua Windows. Chưa xác nhận bằng cuộc gọi Zalo thật sau cập nhật. Nhận diện vẫn dựa trên cửa sổ Zalo, có thể cần điều chỉnh khi Zalo thay đổi giao diện.

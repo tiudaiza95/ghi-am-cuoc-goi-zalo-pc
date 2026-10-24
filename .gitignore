@@ -1,0 +1,16 @@
+__pycache__/
+*.py[cod]
+.venv/
+build/
+dist/
+release/
+tools/
+*.exe
+*.zip
+*.wav
+*.mp3
+*.log
+settings.json
+zcc_temp_*/
+.env
+.env.*

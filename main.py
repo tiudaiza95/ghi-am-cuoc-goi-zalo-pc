@@ -1,0 +1,687 @@
+"""Ghi Am Zalo PC - local call audio recorder for Windows.
+
+The app does NOT intercept Zalo's network traffic, modify Zalo, or access
+other users' messages. It heuristically detects call windows and offers a
+30-second user decision when automatic recording is disabled. The user must have informed all participants and
+obtained any consent required before starting recording.
+"""
+from __future__ import annotations
+
+import multiprocessing
+
+if __name__ == '__main__':
+    multiprocessing.freeze_support()
+
+import json
+import os
+from pathlib import Path
+import queue
+import sys
+import time
+from datetime import datetime
+from tkinter import filedialog, messagebox
+
+import customtkinter as ctk
+from recording_names import caller_from_title
+from recording_library import atomic_json, recovery_candidates
+from library_window import LibraryWindow
+from desktop_support import SingleInstance, setup_logger, create_tray, set_autostart, autostart_enabled
+import logging
+
+from audio_engine import AudioSession, scan_devices, find_ffmpeg
+from zalo_detector import (
+    ZaloCallDetector, describe_windows, find_zalo_launcher,
+    windows_for_pids, zalo_processes, looks_like_call_title, is_call_process_window, plain,
+)
+
+APP = 'Ghi Âm Zalo PC'
+VERSION = '2.4.0 • Windows'
+BG = ('#F2F2F7', '#111114')
+SURFACE = ('#FFFFFF', '#1C1C1E')
+SURFACE_2 = ('#E5E5EA', '#38383A')
+TEXT = ('#1C1C1E', '#F5F5F7')
+MUTED = ('#636366', '#AEAEB2')
+BLUE = ('#007AFF', '#0A84FF')
+GREEN = ('#248A3D', '#30D158')
+RED = ('#D93025', '#FF6961')
+GOLD = ('#9C6500', '#FFD60A')
+CONFIG = Path(os.getenv('APPDATA', str(Path.home()))) / 'ZaloCallCompanion' / 'settings.json'
+DEFAULT_FOLDER = Path.home() / 'Documents' / 'Zalo Call Companion' / 'Ban ghi am'
+
+
+def load_settings():
+    try:
+        data = json.loads(CONFIG.read_text(encoding='utf-8'))
+        return data if isinstance(data, dict) else {}
+    except (ValueError, OSError):
+        return {}
+
+
+def save_settings(data):
+    CONFIG.parent.mkdir(parents=True, exist_ok=True)
+    atomic_json(CONFIG, data)
+
+
+def device_name(dev):
+    return f"{dev['name']}  [#{int(dev['index'])}]"
+
+
+def resolve_device(devices, selection):
+    selected_name = selection.rsplit('[#', 1)[0].strip()
+    matches = [d for d in devices if d['name'].strip() == selected_name]
+    if len(matches) != 1:
+        raise RuntimeError('Thiết bị đã thay đổi hoặc trùng tên. Mở Cài đặt, làm mới và chọn lại micro/loa.')
+    return int(matches[0]['index'])
+
+
+class ConfirmPopup(ctk.CTkToplevel):
+    def __init__(self, parent, reason, on_accept, on_decline, caller_name=''):
+        super().__init__(parent)
+        self.title('Xác nhận ghi âm cuộc gọi')
+        self.geometry('460x430')
+        self.resizable(False, False)
+        self.configure(fg_color=BG)
+        self.remaining = 30
+        self.on_accept = on_accept
+        self.on_decline = on_decline
+        self.active = True
+        self.protocol('WM_DELETE_WINDOW', self.decline)
+        self.attributes('-topmost', True)
+        self.transient(parent)
+        self.after(50, self._front)
+        body = ctk.CTkFrame(self, fg_color=SURFACE, corner_radius=22)
+        body.pack(fill='both', expand=True, padx=14, pady=14)
+        self._icon = ctk.CTkLabel(body, text='☎', width=68, height=68, corner_radius=34,
+                                   fg_color=SURFACE_2, text_color=BLUE, font=('Segoe UI Symbol', 31))
+        self._icon.pack(pady=(20, 9))
+        ctk.CTkLabel(body, text='Ghi âm cuộc gọi Zalo?', font=('Segoe UI', 21, 'bold'),
+                     text_color=TEXT).pack()
+        ctk.CTkLabel(body, text=reason, text_color=MUTED, font=('Segoe UI', 12),
+                     wraplength=375).pack(pady=(4, 5))
+        ctk.CTkLabel(body, text='Chỉ bấm Đồng ý khi các bên đã được thông báo và đồng ý ghi âm.',
+                     text_color=GOLD, font=('Segoe UI', 11), wraplength=375).pack(pady=(3, 13))
+        row = ctk.CTkFrame(body, fg_color='transparent')
+        ctk.CTkLabel(body, text='Tên người gọi để lưu tệp (có thể sửa):',
+                     text_color=MUTED, font=('Segoe UI', 12)).pack(anchor='w', padx=25)
+        self.name_entry = ctk.CTkEntry(body, height=34,
+            placeholder_text='Chưa đọc được tên — nhập tên hoặc để trống')
+        self.name_entry.pack(fill='x', padx=25, pady=(3, 12))
+        if caller_name:
+            self.name_entry.insert(0, caller_name)
+        row.pack(padx=25, fill='x')
+        ctk.CTkButton(row, text='Không ghi', width=178, height=43, corner_radius=12,
+                      fg_color=SURFACE_2, hover_color=('#D1D1D6', '#48484A'), text_color=TEXT,
+                      font=('Segoe UI', 13, 'bold'), command=self.decline).pack(side='left')
+        ctk.CTkButton(row, text='Đồng ý ghi âm', width=178, height=43,
+                      corner_radius=12, fg_color=BLUE, hover_color='#396bd8',
+                      font=('Segoe UI', 13, 'bold'), command=self.accept).pack(side='right')
+        self.counter = ctk.CTkLabel(body, text='', text_color=MUTED,
+                                    font=('Segoe UI', 12))
+        self.counter.pack(pady=(13, 10))
+        self._tick()
+
+    def _front(self):
+        if self.active:
+            self.lift()
+            self.focus_force()
+
+    def _tick(self):
+        if not self.active:
+            return
+        self.counter.configure(text=f'Tự động bỏ qua sau {self.remaining} giây')
+        if self.remaining <= 0:
+            self.decline()
+        else:
+            self.remaining -= 1
+            self.after(1000, self._tick)
+
+    def accept(self):
+        if self.active:
+            name = self.name_entry.get().strip()
+            self.active = False
+            self.destroy()
+            self.on_accept(name)
+
+    def decline(self):
+        if self.active:
+            self.active = False
+            self.destroy()
+            self.on_decline()
+
+
+class Companion(ctk.CTk):
+    def __init__(self, instance=None):
+        ctk.set_appearance_mode('Light')
+        ctk.set_default_color_theme('blue')
+        super().__init__(fg_color=BG)
+        self.instance = instance
+        self.tray = None
+        self.library = None
+        self.pending_signals = {}
+        try:
+            self.logger = setup_logger(CONFIG.parent / 'logs')
+        except OSError:
+            self.logger = logging.getLogger('zcc')
+        self.title(f'{APP} — {VERSION}')
+        self.geometry('900x760')
+        self.minsize(820, 680)
+        self.protocol('WM_DELETE_WINDOW', self.hide_to_tray)
+        self.settings = load_settings()
+        self.appearance = self.settings.get('appearance', 'Light')
+        if self.appearance not in ('Light', 'Dark'):
+            self.appearance = 'Light'
+        ctk.set_appearance_mode(self.appearance)
+        self.auto_record = bool(self.settings.get('auto_record', True))
+        self.events = queue.Queue()
+        self.recorder = AudioSession(self.events)
+        self.detector = ZaloCallDetector()
+        self.detector.allow_new_windows = bool(self.settings.get('detect_new_windows', True))
+        self.last_processes = {}
+        self.last_windows = []
+        self.pending_popup: ConfirmPopup | None = None
+        self.current_call_key: int | None = None
+        self.current_caller_name = ''
+        self.active_call_keys: set[int] = set()
+        self.lost_call_since = None
+        self.last_status_running = None
+        self.folder = str(self.settings.get('folder', DEFAULT_FOLDER))
+        self.chosen_format = str(self.settings.get('format', 'MP3'))
+        self.mics = []
+        self.speakers = []
+        self.logs = []
+        self.close_requested = False
+        self._build_ui()
+        self.reload_devices()
+        self.after(400, self._poll)
+        self.after(500, self._clock)
+        self.after(1500, self._initial_zalo_check)
+        self.after(800, self._check_ffmpeg)
+        self.after(2000, self._offer_recovery)
+        self.after(250, self._desktop_poll)
+
+    def report_callback_exception(self, exc, value, tb):
+        self.logger.error('Lỗi giao diện', exc_info=(exc, value, tb))
+        messagebox.showerror('Ứng dụng gặp lỗi', str(value), parent=self)
+
+    def _offer_recovery(self):
+        try:
+            if recovery_candidates(self.folder):
+                self.log('Có phiên chưa lưu. Mở Bản ghi & khôi phục để lấy lại âm thanh.')
+        except OSError as ex:
+            self.log('Chưa kiểm tra được phiên cũ: ' + str(ex))
+
+    def _desktop_poll(self):
+        if self.instance and self.instance.requested_show():
+            self.show_window()
+        self.after(250, self._desktop_poll)
+
+    def show_window(self):
+        self.deiconify()
+        self.lift()
+        self.focus_force()
+
+    def hide_to_tray(self):
+        try:
+            if self.tray is None:
+                self.tray = create_tray(self.events, Path(__file__).parent / 'assets' / 'companion.ico')
+            self.withdraw()
+            self._notify('Đang chạy nền và theo dõi Zalo. ' + ('Tự ghi cuộc gọi đang bật.' if self.auto_record else 'Sẽ hỏi trước khi ghi.'))
+        except Exception as ex:
+            messagebox.showerror('Không thu xuống khay được', str(ex), parent=self)
+
+    def _notify(self, message):
+        if self.tray:
+            try:
+                self.tray.title = APP + ' — ' + message[:70]
+                self.tray.notify(message, APP)
+            except Exception:
+                pass
+
+    def update_auto_hint(self):
+        self.auto_hint.configure(text=('Tự ghi đã bật, kể cả khi chạy nền. Hãy thông báo cho người tham gia trước cuộc gọi.'
+                                      if self.auto_record else 'App hỏi xác nhận trước mỗi lần ghi, kể cả khi chạy nền.'))
+
+    def toggle_auto_record(self):
+        self.auto_record = bool(self.auto_switch.get())
+        self.persist()
+        self.update_auto_hint()
+        self.log('Tự ghi cuộc gọi: ' + ('BẬT' if self.auto_record else 'TẮT'))
+
+    def _handle_signal(self, signal):
+        if self.recorder.state != 'idle' or signal.key not in self.active_call_keys:
+            return
+        if self.auto_record:
+            self.current_call_key = signal.key
+            self.current_caller_name = next((caller_from_title(w.title) for w in self.last_windows if w.hwnd == signal.key), '')
+            self.lost_call_since = None
+            self.log('Tự ghi: ' + signal.reason)
+            self._start_recording(automatic=True)
+        else:
+            self._show_decision(signal.key, signal.reason)
+
+    def toggle_autostart(self):
+        try:
+            set_autostart(bool(self.autostart_switch.get()))
+        except Exception as ex:
+            self.autostart_switch.select() if autostart_enabled() else self.autostart_switch.deselect()
+            messagebox.showerror('Khởi động cùng Windows', str(ex), parent=self)
+
+    def open_library(self):
+        if self.library and self.library.winfo_exists():
+            self.library.destroy()
+        self.library = LibraryWindow(self, self.folder, self.recover_recording)
+
+    def recover_recording(self, temp):
+        try:
+            self.recorder.recover(temp, self.format_menu.get())
+            self.record_btn.configure(state='disabled')
+            self.recording_state.configure(text='● ĐANG KHÔI PHỤC', text_color=GOLD)
+            self.log('Đang khôi phục: ' + str(temp))
+        except Exception as ex:
+            messagebox.showerror('Khôi phục', str(ex), parent=self)
+
+    def export_logs(self):
+        target = filedialog.asksaveasfilename(parent=self, title='Xuất nhật ký hỗ trợ',
+                  initialfile='companion-log.txt', defaultextension='.txt')
+        if target:
+            try:
+                files = sorted((CONFIG.parent / 'logs').glob('companion.log*'), reverse=True)
+                Path(target).write_text('\n'.join(p.read_text(encoding='utf-8') for p in files), encoding='utf-8')
+                self.log('Đã xuất nhật ký hỗ trợ. Xem lại tên và đường dẫn trước khi chia sẻ.')
+            except OSError as ex:
+                messagebox.showerror('Xuất nhật ký', str(ex), parent=self)
+
+    def destroy(self):
+        self._destroyed = True
+        if self.tray:
+            self.tray.stop()
+            self.tray = None
+        super().destroy()
+
+    def _check_ffmpeg(self):
+        if not find_ffmpeg():
+            self.log('Thiếu FFmpeg: chưa thể ghi và lưu MP3/WAV.')
+            messagebox.showwarning('Thiếu FFmpeg',
+                'Cần FFmpeg để ghi và lưu cả MP3 lẫn WAV.\n'
+                'Cài bằng lệnh: winget install -e --id Gyan.FFmpeg\n'
+                'Sau đó mở lại ứng dụng.', parent=self)
+
+    def _lbl(self, parent, text, size=13, color=TEXT, weight='normal', **kwargs):
+        return ctk.CTkLabel(parent, text=text, text_color=color,
+                            font=('Segoe UI', size, weight), **kwargs)
+
+    def _card(self, parent, **kwargs):
+        return ctk.CTkFrame(parent, fg_color=SURFACE, corner_radius=18, **kwargs)
+
+    def _build_ui(self):
+        from ui_layout import build_ui
+        build_ui(self)
+
+    def log(self, text):
+        self.logger.info(text)
+        self.logs.append(f'{datetime.now():%H:%M:%S}   {text}')
+        self.logs = self.logs[-100:]
+        self.log_view.configure(state='normal')
+        self.log_view.delete('1.0', 'end')
+        self.log_view.insert('end', '\n'.join(self.logs))
+        self.log_view.configure(state='disabled')
+
+    def persist(self):
+        data = {'appearance': self.appearance, 'format': self.format_menu.get(), 'folder': self.folder,
+                'microphone': self.mic_combo.get(),
+                'speaker': self.out_combo.get(),
+                'detect_new_windows': bool(self.detector.allow_new_windows),
+                'auto_record': self.auto_record}
+        self.settings = data
+        try:
+            save_settings(data)
+        except OSError as ex:
+            self.log('Không lưu được cài đặt: ' + str(ex))
+
+    def toggle_new_windows(self):
+        self.detector.allow_new_windows = bool(self.detector_switch.get())
+        self.persist()
+        self.log('Nhận diện tiến trình gọi chuyên biệt: ' + ('BẬT' if self.detector.allow_new_windows else 'TẮT'))
+
+    def change_theme(self, choice):
+        self.appearance = 'Dark' if choice == 'Tối' else 'Light'
+        ctk.set_appearance_mode(self.appearance)
+        self.persist()
+
+    def change_format(self, value):
+        self.chosen_format = value
+        self.persist()
+
+    def reload_devices(self):
+        if self.recorder.state != 'idle':
+            return
+        try:
+            mics, speakers, default_mic, default_speaker = scan_devices()
+            self.mics, self.speakers = mics, speakers
+            mic_options = [device_name(d) for d in mics]
+            speaker_options = [device_name(d) for d in speakers]
+            self.mic_combo.configure(values=mic_options)
+            self.out_combo.configure(values=speaker_options)
+            prefer_mic = self.settings.get('microphone')
+            prefer_speaker = self.settings.get('speaker')
+            self.mic_combo.set(prefer_mic if prefer_mic in mic_options else
+                               next((device_name(d) for d in mics if d['index'] == default_mic), mic_options[0]))
+            self.out_combo.set(prefer_speaker if prefer_speaker in speaker_options else
+                               next((device_name(d) for d in speakers if d['index'] == default_speaker), speaker_options[0]))
+            self.persist()
+            self.log('Đã đọc danh sách thiết bị micro / tai nghe.')
+        except Exception as ex:
+            self.log('Không đọc được thiết bị: ' + str(ex))
+            messagebox.showwarning('Cấu hình âm thanh', str(ex), parent=self)
+
+    def choose_folder(self):
+        chosen = filedialog.askdirectory(parent=self, title='Chọn thư mục lưu bản ghi',
+                                         initialdir=str(Path(self.folder).parent))
+        if chosen:
+            self.folder = chosen
+            self.folder_label.configure(text='Lưu tại: ' + self.folder)
+            self.persist()
+
+    def open_folder(self):
+        try:
+            path = Path(self.folder)
+            path.mkdir(parents=True, exist_ok=True)
+            os.startfile(str(path))
+        except Exception as ex:
+            messagebox.showerror('Không mở được thư mục', str(ex), parent=self)
+
+    def open_zalo(self):
+        launcher = find_zalo_launcher(self.last_processes)
+        if launcher:
+            try:
+                os.startfile(str(launcher))
+                self.log('Đã yêu cầu Windows mở Zalo.')
+            except Exception as ex:
+                messagebox.showerror('Lỗi mở Zalo', str(ex), parent=self)
+        else:
+            messagebox.showinfo('Hãy mở Zalo PC',
+                'Chưa tìm được đường dẫn Zalo. Bạn hãy mở ứng dụng Zalo PC từ Desktop hoặc Start Menu, '
+                'sau đó Zalo Call Companion sẽ tự kết nối.', parent=self)
+
+    def _initial_zalo_check(self):
+        if not self.last_processes:
+            if messagebox.askyesno('Zalo PC chưa mở',
+                    'Không thấy Zalo PC đang chạy. Bạn có muốn mở Zalo bây giờ?', parent=self):
+                self.open_zalo()
+
+    def _set_connected(self, running):
+        if self.last_status_running == running:
+            return
+        self.last_status_running = running
+        if running:
+            self.zalo_sidebar_state.configure(text='● Zalo đang chạy', text_color=GREEN)
+            self.connection_text.configure(text='Đã nhận diện Zalo PC')
+            self.connection_chip.configure(text='ĐÃ KẾT NỐI', text_color=GREEN)
+            self.connection_hint.configure(text='Đang quan sát cửa sổ cuộc gọi đến / đi.')
+            self.log('Đã kết nối với tiến trình Zalo PC.')
+        else:
+            self.zalo_sidebar_state.configure(text='● Zalo chưa mở', text_color=GOLD)
+            self.connection_text.configure(text='Chưa tìm thấy Zalo PC')
+            self.connection_chip.configure(text='CHƯA KẾT NỐI', text_color=GOLD)
+            self.connection_hint.configure(text='Mở Zalo để kích hoạt phát hiện cuộc gọi.')
+            self.log('Chưa tìm thấy Zalo PC đang chạy.')
+
+    def diagnostics(self):
+        """Save snapshot to user's chosen location; no messages/audio collected."""
+        path = filedialog.asksaveasfilename(parent=self, title='Lưu chẩn đoán Zalo',
+                    defaultextension='.txt', filetypes=[('Văn bản', '*.txt')],
+                    initialfile='kiem-tra-cua-so-zalo.txt')
+        if not path:
+            return
+        try:
+            processes = zalo_processes()
+            windows = windows_for_pids(set(processes))
+            Path(path).write_text(describe_windows(windows, processes), encoding='utf-8')
+            self.log('Đã lưu chẩn đoán cửa sổ Zalo.')
+            messagebox.showinfo('Đã lưu',
+                'Đã lưu thông tin cửa sổ Zalo. Nếu bạn chia sẻ để nhờ hỗ trợ, hãy xem lại tên cửa sổ '
+                'vì có thể chứa tên người liên hệ.', parent=self)
+        except Exception as ex:
+            messagebox.showerror('Lỗi', str(ex), parent=self)
+
+    def manual_confirm(self):
+        if self.recorder.state != 'idle':
+            return
+        key = None
+        if len(self.active_call_keys) == 1:
+            if messagebox.askyesno('Tự dừng khi kết thúc gọi?',
+                    'Gắn bản ghi với cuộc gọi đang nhận diện?\nCó: tự dừng khi cuộc gọi kết thúc.\nKhông: ghi đến khi bạn bấm Dừng & lưu.', parent=self):
+                key = next(iter(self.active_call_keys))
+        self._show_decision(key, 'Tự dừng theo cuộc gọi.' if key is not None else 'Ghi thủ công: bấm Dừng & lưu khi xong.')
+
+    def _show_decision(self, key, reason):
+        if self.pending_popup or self.recorder.state != 'idle':
+            return
+        if self.state() == 'withdrawn':
+            self.show_window()
+        caller_name = next((caller_from_title(w.title) for w in self.last_windows if w.hwnd == key), '')
+        def accept(name=''):
+            self.pending_popup = None
+            if key is not None and key not in self.active_call_keys:
+                self.log('Cuộc gọi không còn được nhận diện; bỏ qua yêu cầu ghi âm cũ.')
+                return
+            self.current_call_key = key
+            self.current_caller_name = name
+            self.lost_call_since = None
+            self._start_recording()
+        def decline():
+            self.pending_popup = None
+            if key is not None:
+                self.detector.dismiss(key)
+            self.log('Bỏ qua ghi âm cuộc gọi (hoặc hết 30 giây).')
+        self.pending_popup = ConfirmPopup(self, reason, accept, decline, caller_name=caller_name)
+        self.log('Hiện thông báo hỏi có ghi âm cuộc gọi không.')
+
+    def _selected_index(self, devices, combo):
+        name = combo.get()
+        for d in devices:
+            if device_name(d) == name:
+                return int(d['index'])
+        raise RuntimeError('Thiết bị đã thay đổi. Hãy bấm “Làm mới” rồi chọn lại.')
+
+    def _start_recording(self, automatic=False):
+        try:
+            # Device indexes may move when a headset is unplugged. Resolve the
+            # selected endpoint by its full name, never silently switch devices.
+            if self.library and self.library.winfo_exists():
+                self.library.stop_playback()
+            microphones, speakers, _, _ = scan_devices()
+            mic = resolve_device(microphones, self.mic_combo.get())
+            speaker = resolve_device(speakers, self.out_combo.get())
+            if not self.recorder.start(mic, speaker, Path(self.folder), self.format_menu.get(), self.current_caller_name):
+                self.current_call_key = None
+                return
+            self.record_btn.configure(state='disabled')
+            self.stop_btn.configure(state='normal')
+            self.mic_combo.configure(state='disabled')
+            self.out_combo.configure(state='disabled')
+            self.format_menu.configure(state='disabled')
+            self.recording_state.configure(text='● ĐANG MỞ THIẾT BỊ', text_color=GOLD)
+            self.current_file_label.configure(text='Đang ghi: ' + self.recorder.recording_file.name)
+            self.log('Đang mở hai nguồn thu (' + ('tự động' if automatic else 'đã xác nhận') + ').')
+            self._notify('Đang bắt đầu ghi cuộc gọi. Chọn Dừng & lưu trong menu khay để dừng.')
+            self.quiet_since = {'speaker': time.monotonic(), 'microphone': time.monotonic()}
+        except Exception as ex:
+            self.current_call_key = None
+            self.log('Không thể bắt đầu ghi âm: ' + str(ex))
+            self.current_file_label.configure(text='Không thể ghi: ' + str(ex))
+            if automatic:
+                self._notify('Không thể ghi âm: ' + str(ex))
+            else:
+                messagebox.showerror('Không thể ghi âm', str(ex), parent=self)
+
+    def stop_recording(self):
+        if self.recorder.stop():
+            self.current_call_key = None
+            self.stop_btn.configure(state='disabled')
+            self.recording_state.configure(text='● ĐANG LƯU', text_color=GOLD)
+            self.log('Đang ghép và lưu bản ghi âm thanh...')
+
+    def _restore_controls(self):
+        self.record_btn.configure(state='normal')
+        self.stop_btn.configure(state='disabled')
+        self.mic_combo.configure(state='normal')
+        self.out_combo.configure(state='normal')
+        self.format_menu.configure(state='normal')
+        self.recording_state.configure(text='● CHƯA GHI', text_color=MUTED)
+        self.timer_label.configure(text='00:00:00')
+
+    def _poll(self):
+        # Poll GUI queue in main thread. Windows window enumeration is cheap;
+        # no third-party Zalo process data or messages are read.
+        self.recorder.retry_completion()
+        self.recorder.refresh()
+        try:
+            while True:
+                kind, message = self.events.get_nowait()
+                if kind == 'saved':
+                    self._restore_controls()
+                    self.current_file_label.configure(text='Đã lưu: ' + Path(message).name)
+                    self.log('Đã lưu thành công: ' + Path(message).name)
+                    self._notify('Đã lưu: ' + Path(message).name)
+                    if self.library and self.library.winfo_exists():
+                        self.library.refresh()
+                    if self.close_requested:
+                        self.persist()
+                        self.destroy()
+                        return
+                elif kind == 'error':
+                    self.close_requested = False
+                    self._restore_controls()
+                    self.log('Lỗi lưu bản ghi âm.')
+                    self.current_file_label.configure(text='Lưu lỗi — mở Nhật ký / Khôi phục để kiểm tra.')
+                    self.log(message)
+                    self._notify('Lưu bản ghi gặp lỗi. Mở ứng dụng để kiểm tra và khôi phục.')
+                    if self.state() != 'withdrawn':
+                        messagebox.showerror('Ghi âm gặp lỗi', message, parent=self)
+                elif kind == 'blocked':
+                    self.close_requested = False
+                    self.record_btn.configure(state='disabled')
+                    self.stop_btn.configure(state='disabled')
+                    self.recording_state.configure(text='● CHỜ THIẾT BỊ', text_color=GOLD)
+                    self.log(message)
+                elif kind == 'info':
+                    self.log(message)
+                elif kind == 'ready':
+                    if self.recorder.state == 'recording':
+                        self.recording_state.configure(text='● ĐANG GHI', text_color=RED)
+                        self.log(message)
+                elif kind == 'show':
+                    self.show_window()
+                elif kind == 'stop':
+                    self.stop_recording()
+                elif kind == 'quit':
+                    self.show_window()
+                    self.on_close()
+                    if getattr(self, "_destroyed", False) is True:
+                        return
+        except queue.Empty:
+            pass
+        try:
+            self.last_processes = zalo_processes()
+            running = bool(self.last_processes)
+            self._set_connected(running)
+            self.last_windows = windows_for_pids(set(self.last_processes)) if running else []
+            signals, active = self.detector.update(self.last_windows, running)
+            self.active_call_keys = active
+            if self.recorder.state in ('starting', 'recording') and self.current_call_key is not None:
+                # A ringing window may be replaced by another HWND when answered.
+                # Only a stable, positively identified call window can take over.
+                ended = any(w.hwnd == self.current_call_key and any(t in plain(w.title)
+                    for t in ('cuoc goi ket thuc', 'da ket thuc', 'ket thuc cuoc goi',
+                              'call ended', 'call finished', 'missed call', 'khong bat may', 'khong tra loi'))
+                    for w in self.last_windows)
+                candidates = [w for w in self.last_windows if w.hwnd in active and
+                    (looks_like_call_title(w.title) or is_call_process_window(w))]
+                current = next((w for w in candidates if w.hwnd == self.current_call_key), None)
+                if current is None and not ended and len(candidates) == 1:
+                    candidate = candidates[0]
+                    name = caller_from_title(candidate.title)
+                    old_name = self.current_caller_name
+                    if not old_name or not name or plain(old_name) == plain(name):
+                        current = candidate
+                        self.current_call_key = candidate.hwnd
+                        self.log('Đã chuyển sang cửa sổ cuộc gọi mới; tiếp tục cùng bản ghi.')
+                if current is not None:
+                    self.lost_call_since = None
+                    name = caller_from_title(current.title)
+                    if name and not self.current_caller_name:
+                        self.recorder.set_caller_name(name)
+                        self.current_caller_name = name
+                        self.current_file_label.configure(text='Đang ghi: ' + self.recorder.recording_file.name)
+                    self.pending_signals.pop(current.hwnd, None)
+                    signals = [s for s in signals if s.key != current.hwnd]
+                elif self.current_call_key not in active or ended:
+                    if self.lost_call_since is None:
+                        self.lost_call_since = time.monotonic()
+                    if ended or time.monotonic() - self.lost_call_since >= 5:
+                        self.log('Cuộc gọi đã kết thúc hoặc cửa sổ đã đóng: tự dừng & lưu.')
+                        self.stop_recording()
+                else:
+                    self.lost_call_since = None
+            if signals:
+                self.pending_signals[signals[0].key] = signals[0]
+            self.pending_signals = {key: signal for key, signal in self.pending_signals.items() if key in active}
+            if self.pending_signals and not self.pending_popup and self.recorder.state == 'idle':
+                key = next(iter(self.pending_signals))
+                signal = self.pending_signals.pop(key)
+                self._handle_signal(signal)
+            for additional in signals[1:]:
+                # Ignore extra call windows from the same incoming/outgoing session.
+                self.detector.dismiss(additional.key)
+            if self.recorder.state in ('starting', 'recording') and self.recorder.error_if_any():
+                self.log('Thiết bị gặp lỗi; lưu phần đã thu: ' + self.recorder.error_if_any())
+                self.stop_recording()
+        except Exception as ex:
+            self.log('Lỗi nhận diện tạm thời: ' + str(ex)[:95])
+        self.after(750, self._poll)
+
+    def _clock(self):
+        self.recorder.refresh()
+        if self.recorder.state == 'recording' and self.recorder.recorded_from:
+            seconds = int(time.monotonic() - self.recorder.recorded_from)
+            self.timer_label.configure(text=f'{seconds//3600:02d}:{seconds//60%60:02d}:{seconds%60:02d}')
+        elif self.recorder.state in ('saving', 'blocked'):
+            seconds = int(self.recorder.elapsed)
+            self.timer_label.configure(text=f'{seconds//3600:02d}:{seconds//60%60:02d}:{seconds%60:02d}')
+        quiet = []
+        for role, meter in self.audio_meters.items():
+            level = self.recorder.levels.get(role, 0) if self.recorder.state == 'recording' else 0
+            meter.set(min(1, level ** 0.5))
+            if self.recorder.state == 'recording':
+                if level > 0.005:
+                    self.quiet_since[role] = time.monotonic()
+                elif time.monotonic() - self.quiet_since.get(role, time.monotonic()) >= 10:
+                    quiet.append('micro' if role == 'microphone' else 'loa/tai nghe')
+        self.audio_hint.configure(text=('Chưa thấy tín hiệu từ ' + ', '.join(quiet) + ' — kiểm tra thiết bị nếu đang nói.')
+                                  if quiet else 'Mức âm hiển thị khi ghi; im lặng không tự dừng phiên.',
+                                  text_color=GOLD if quiet else MUTED)
+        self.after(500, self._clock)
+
+    def on_close(self):
+        if self.recorder.state in ('starting', 'recording'):
+            if messagebox.askyesno('Dừng ghi âm?', 'Dừng, lưu bản ghi rồi đóng phần mềm?', parent=self):
+                self.close_requested = True
+                self.stop_recording()
+        elif self.recorder.state in ('saving', 'blocked'):
+            messagebox.showinfo('Đang lưu', 'Ứng dụng đang lưu bản ghi. Hãy đóng sau khi lưu xong.', parent=self)
+        else:
+            if self.pending_popup:
+                self.pending_popup.decline()
+            self.persist()
+            self.destroy()
+
+if __name__ == '__main__':
+    if sys.platform != 'win32':
+        raise SystemExit('Chương trình chỉ chạy trên Windows 10/11.')
+    instance = SingleInstance()
+    try:
+        if instance.primary:
+            Companion(instance).mainloop()
+    finally:
+        instance.close()
