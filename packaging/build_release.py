@@ -12,7 +12,7 @@ import zipfile
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from audio_engine import find_ffmpeg
-VERSION = '2.4.0'
+VERSION = '2.7.0'
 
 
 def run(args):
@@ -43,6 +43,8 @@ def main():
         if not candidate.is_file():
             candidate = Path(ffmpeg).parent / name
         if not candidate.is_file():
+            candidate = Path(ffmpeg).parent.parent / 'licenses' / ('FFmpeg-' + name)
+        if not candidate.is_file():
             raise SystemExit(f'Missing FFmpeg {name}; keep the original provider license/readme alongside FFmpeg.')
         shutil.copy2(candidate, payload / 'licenses' / ('FFmpeg-' + name))
     info = subprocess.run([ffmpeg, '-version'], capture_output=True, text=True, check=True).stdout
@@ -64,7 +66,7 @@ def main():
     for item in (Path(sys.base_prefix) / 'tcl').glob('*/license.terms'):
         shutil.copy2(item, payload / 'licenses' / (item.parent.name + '-license.txt'))
     (ROOT / 'requirements-lock.txt').write_text('\n'.join(f'{k}=={v}' for k,v in versions.items()) + '\n', encoding='utf-8')
-    for name in ['README.md', 'HUONG_DAN_CAI_DAT.md', 'HUONG_DAN_GITHUB.md', 'THIRD_PARTY.md']:
+    for name in ['README.md', 'HUONG_DAN_CAI_DAT.md', 'HUONG_DAN_GITHUB.md', 'THIRD_PARTY.md', 'PHIEN_BAN_2.7.0.md']:
         shutil.copy2(ROOT / name, output)
         shutil.copy2(ROOT / name, payload)
     # Whitelist source files: never copy user settings, recordings or logs.

@@ -23,10 +23,12 @@ from tkinter import filedialog, messagebox
 
 import customtkinter as ctk
 from recording_names import caller_from_title
-from recording_library import atomic_json, recovery_candidates
+from recording_library import atomic_json, recovery_candidates, read_json
 from library_window import LibraryWindow
-from desktop_support import SingleInstance, setup_logger, create_tray, set_autostart, autostart_enabled
+from ui_effects import ManagedToplevel, cancel_root_callbacks
+from desktop_support import SingleInstance, setup_logger, create_tray, set_autostart, autostart_enabled, update_tray_state
 import logging
+from app_paths import app_root, resolve_recording_folder, stored_recording_folder
 
 from audio_engine import AudioSession, scan_devices, find_ffmpeg
 from zalo_detector import (
@@ -35,7 +37,7 @@ from zalo_detector import (
 )
 
 APP = 'Ghi Âm Zalo PC'
-VERSION = '2.4.0 • Windows'
+VERSION = '2.7.0 • Windows'
 BG = ('#F2F2F7', '#111114')
 SURFACE = ('#FFFFFF', '#1C1C1E')
 SURFACE_2 = ('#E5E5EA', '#38383A')
@@ -45,8 +47,8 @@ BLUE = ('#007AFF', '#0A84FF')
 GREEN = ('#248A3D', '#30D158')
 RED = ('#D93025', '#FF6961')
 GOLD = ('#9C6500', '#FFD60A')
-CONFIG = Path(os.getenv('APPDATA', str(Path.home()))) / 'ZaloCallCompanion' / 'settings.json'
-DEFAULT_FOLDER = Path.home() / 'Documents' / 'Zalo Call Companion' / 'Ban ghi am'
+CONFIG = app_root() / 'Data' / 'settings.json'
+DEFAULT_FOLDER = app_root() / 'Recordings'
 
 
 def load_settings():
@@ -74,7 +76,7 @@ def resolve_device(devices, selection):
     return int(matches[0]['index'])
 
 
-class ConfirmPopup(ctk.CTkToplevel):
+class ConfirmPopup(ManagedToplevel):
     def __init__(self, parent, reason, on_accept, on_decline, caller_name=''):
         super().__init__(parent)
         self.title('Xác nhận ghi âm cuộc gọi')
@@ -156,6 +158,9 @@ class Companion(ctk.CTk):
         super().__init__(fg_color=BG)
         self.instance = instance
         self.tray = None
+        self._tray_error = False
+        self._test_mode = False
+        self._test_deadline = None
         self.library = None
         self.pending_signals = {}
         try:
@@ -163,10 +168,11 @@ class Companion(ctk.CTk):
         except OSError:
             self.logger = logging.getLogger('zcc')
         self.title(f'{APP} — {VERSION}')
-        self.geometry('900x760')
+        self.geometry(f'{min(980, self.winfo_screenwidth()-60)}x{min(840, self.winfo_screenheight()-90)}')
         self.minsize(820, 680)
         self.protocol('WM_DELETE_WINDOW', self.hide_to_tray)
         self.settings = load_settings()
+        self.reduce_motion = bool(self.settings.get('reduce_motion', False))
         self.appearance = self.settings.get('appearance', 'Light')
         if self.appearance not in ('Light', 'Dark'):
             self.appearance = 'Light'
@@ -184,7 +190,7 @@ class Companion(ctk.CTk):
         self.active_call_keys: set[int] = set()
         self.lost_call_since = None
         self.last_status_running = None
-        self.folder = str(self.settings.get('folder', DEFAULT_FOLDER))
+        self.folder = str(resolve_recording_folder(self.settings.get('folder', DEFAULT_FOLDER)))
         self.chosen_format = str(self.settings.get('format', 'MP3'))
         self.mics = []
         self.speakers = []
@@ -224,6 +230,7 @@ class Companion(ctk.CTk):
         try:
             if self.tray is None:
                 self.tray = create_tray(self.events, Path(__file__).parent / 'assets' / 'companion.ico')
+            self._sync_tray()
             self.withdraw()
             self._notify('Đang chạy nền và theo dõi Zalo. ' + ('Tự ghi cuộc gọi đang bật.' if self.auto_record else 'Sẽ hỏi trước khi ghi.'))
         except Exception as ex:
@@ -232,7 +239,6 @@ class Companion(ctk.CTk):
     def _notify(self, message):
         if self.tray:
             try:
-                self.tray.title = APP + ' — ' + message[:70]
                 self.tray.notify(message, APP)
             except Exception:
                 pass
@@ -267,6 +273,10 @@ class Companion(ctk.CTk):
             messagebox.showerror('Khởi động cùng Windows', str(ex), parent=self)
 
     def open_library(self):
+        if self.library and self.library.winfo_exists() and self.library.folder == Path(self.folder):
+            self.library.deiconify()
+            self.library.lift()
+            return
         if self.library and self.library.winfo_exists():
             self.library.destroy()
         self.library = LibraryWindow(self, self.folder, self.recover_recording)
@@ -293,6 +303,7 @@ class Companion(ctk.CTk):
 
     def destroy(self):
         self._destroyed = True
+        cancel_root_callbacks(self)
         if self.tray:
             self.tray.stop()
             self.tray = None
@@ -327,7 +338,7 @@ class Companion(ctk.CTk):
         self.log_view.configure(state='disabled')
 
     def persist(self):
-        data = {'appearance': self.appearance, 'format': self.format_menu.get(), 'folder': self.folder,
+        data = {'reduce_motion': getattr(self, 'reduce_motion', False) is True, 'appearance': self.appearance, 'format': self.format_menu.get(), 'folder': stored_recording_folder(self.folder),
                 'microphone': self.mic_combo.get(),
                 'speaker': self.out_combo.get(),
                 'detect_new_windows': bool(self.detector.allow_new_windows),
@@ -342,6 +353,33 @@ class Companion(ctk.CTk):
         self.detector.allow_new_windows = bool(self.detector_switch.get())
         self.persist()
         self.log('Nhận diện tiến trình gọi chuyên biệt: ' + ('BẬT' if self.detector.allow_new_windows else 'TẮT'))
+
+    def toggle_motion(self):
+        self.reduce_motion = bool(self.motion_switch.get())
+        self.persist()
+
+    def _sync_tray(self):
+        if self.tray:
+            state = self.recorder.state
+            if state == 'blocked' or (state == 'idle' and self._tray_error):
+                state = 'error'
+            try:
+                update_tray_state(self.tray, state)
+            except Exception as ex:
+                self.logger.debug('Tray update failed: %s', ex)
+
+    def test_audio(self):
+        if self.recorder.state != 'idle' or self.pending_popup or self.active_call_keys:
+            messagebox.showinfo('Kiểm tra âm thanh', 'Hãy chờ cuộc gọi và phiên ghi hiện tại kết thúc.', parent=self)
+            return
+        self._test_mode = True
+        self._test_deadline = None
+        self.current_call_key = None
+        self.current_caller_name = 'Kiểm tra âm thanh'
+        if not self._start_recording():
+            self._test_mode = False
+            return
+        self.current_file_label.configure(text='Thu thử 8 giây khi thiết bị sẵn sàng. Hãy nói và phát âm thanh qua loa/tai nghe.')
 
     def change_theme(self, choice):
         self.appearance = 'Dark' if choice == 'Tối' else 'Light'
@@ -493,9 +531,17 @@ class Companion(ctk.CTk):
             microphones, speakers, _, _ = scan_devices()
             mic = resolve_device(microphones, self.mic_combo.get())
             speaker = resolve_device(speakers, self.out_combo.get())
-            if not self.recorder.start(mic, speaker, Path(self.folder), self.format_menu.get(), self.current_caller_name):
+            testing = getattr(self, '_test_mode', False) is True
+            self.recorder.session_details = {'devices': {
+                'microphone': next(d['name'] for d in microphones if int(d['index']) == mic),
+                'speaker': next(d['name'] for d in speakers if int(d['index']) == speaker)},
+                'purpose': 'audio_check' if testing else 'call'}
+            folder = app_root() / 'Data' / 'AudioChecks' if testing else Path(self.folder)
+            if not self.recorder.start(mic, speaker, folder, self.format_menu.get(), self.current_caller_name):
                 self.current_call_key = None
                 return
+            self._tray_error = False
+            self.test_btn.configure(state='disabled')
             self.record_btn.configure(state='disabled')
             self.stop_btn.configure(state='normal')
             self.mic_combo.configure(state='disabled')
@@ -506,8 +552,12 @@ class Companion(ctk.CTk):
             self.log('Đang mở hai nguồn thu (' + ('tự động' if automatic else 'đã xác nhận') + ').')
             self._notify('Đang bắt đầu ghi cuộc gọi. Chọn Dừng & lưu trong menu khay để dừng.')
             self.quiet_since = {'speaker': time.monotonic(), 'microphone': time.monotonic()}
+            self._sync_tray()
+            return True
         except Exception as ex:
             self.current_call_key = None
+            self._tray_error = True
+            self._sync_tray()
             self.log('Không thể bắt đầu ghi âm: ' + str(ex))
             self.current_file_label.configure(text='Không thể ghi: ' + str(ex))
             if automatic:
@@ -523,6 +573,7 @@ class Companion(ctk.CTk):
             self.log('Đang ghép và lưu bản ghi âm thanh...')
 
     def _restore_controls(self):
+        self.test_btn.configure(state='normal')
         self.record_btn.configure(state='normal')
         self.stop_btn.configure(state='disabled')
         self.mic_combo.configure(state='normal')
@@ -540,20 +591,33 @@ class Companion(ctk.CTk):
             while True:
                 kind, message = self.events.get_nowait()
                 if kind == 'saved':
+                    self._tray_error = bool(read_json(Path(message).with_suffix(Path(message).suffix + '.json')).get('warnings'))
                     self._restore_controls()
                     self.current_file_label.configure(text='Đã lưu: ' + Path(message).name)
                     self.log('Đã lưu thành công: ' + Path(message).name)
                     self._notify('Đã lưu: ' + Path(message).name)
                     if self.library and self.library.winfo_exists():
                         self.library.refresh()
+                    if getattr(self, '_test_mode', False) is True:
+                        self._test_mode = False
+                        self._test_deadline = None
+                        if not self.close_requested and not self.pending_signals:
+                            if self.library and self.library.winfo_exists():
+                                self.library.destroy()
+                            self.library = LibraryWindow(self, Path(message).parent, self.recover_recording)
+                            self.library.select_path(message, autoplay=True)
                     if self.close_requested:
                         self.persist()
                         self.destroy()
                         return
                 elif kind == 'error':
+                    self._test_mode = False
+                    self._test_deadline = None
+                    self._tray_error = True
                     self.close_requested = False
                     self._restore_controls()
                     self.log('Lỗi lưu bản ghi âm.')
+                    self.recording_state.configure(text='● LƯU BỊ LỖI', text_color=RED)
                     self.current_file_label.configure(text='Lưu lỗi — mở Nhật ký / Khôi phục để kiểm tra.')
                     self.log(message)
                     self._notify('Lưu bản ghi gặp lỗi. Mở ứng dụng để kiểm tra và khôi phục.')
@@ -569,8 +633,10 @@ class Companion(ctk.CTk):
                     self.log(message)
                 elif kind == 'ready':
                     if self.recorder.state == 'recording':
-                        self.recording_state.configure(text='● ĐANG GHI', text_color=RED)
+                        self.recording_state.configure(text='● ĐANG THU THỬ' if getattr(self, '_test_mode', False) is True else '● ĐANG GHI', text_color=RED)
                         self.log(message)
+                        if getattr(self, '_test_mode', False) is True:
+                            self._test_deadline = time.monotonic() + 8
                 elif kind == 'show':
                     self.show_window()
                 elif kind == 'stop':
@@ -589,6 +655,9 @@ class Companion(ctk.CTk):
             self.last_windows = windows_for_pids(set(self.last_processes)) if running else []
             signals, active = self.detector.update(self.last_windows, running)
             self.active_call_keys = active
+            if signals and getattr(self, '_test_mode', False) is True and self.recorder.state in ('starting', 'recording'):
+                self.log('Có cuộc gọi: dừng bài kiểm tra âm thanh để ưu tiên cuộc gọi.')
+                self.stop_recording()
             if self.recorder.state in ('starting', 'recording') and self.current_call_key is not None:
                 # A ringing window may be replaced by another HWND when answered.
                 # Only a stable, positively identified call window can take over.
@@ -639,10 +708,15 @@ class Companion(ctk.CTk):
                 self.stop_recording()
         except Exception as ex:
             self.log('Lỗi nhận diện tạm thời: ' + str(ex)[:95])
+        self._sync_tray()
         self.after(750, self._poll)
 
     def _clock(self):
         self.recorder.refresh()
+        if getattr(self, '_test_mode', False) is True and self.recorder.state == 'recording':
+            if self._test_deadline is not None and time.monotonic() >= self._test_deadline:
+                self._test_deadline = None
+                self.stop_recording()
         if self.recorder.state == 'recording' and self.recorder.recorded_from:
             seconds = int(time.monotonic() - self.recorder.recorded_from)
             self.timer_label.configure(text=f'{seconds//3600:02d}:{seconds//60%60:02d}:{seconds%60:02d}')
@@ -661,6 +735,9 @@ class Companion(ctk.CTk):
         self.audio_hint.configure(text=('Chưa thấy tín hiệu từ ' + ', '.join(quiet) + ' — kiểm tra thiết bị nếu đang nói.')
                                   if quiet else 'Mức âm hiển thị khi ghi; im lặng không tự dừng phiên.',
                                   text_color=GOLD if quiet else MUTED)
+        if getattr(self, '_test_mode', False) is True and self.recorder.state == 'recording' and self._test_deadline is not None:
+            remaining = max(0, int(self._test_deadline - time.monotonic() + 0.999))
+            self.audio_hint.configure(text=f'Thu thử còn {remaining} giây • Hãy nói vào micro và phát âm thanh trên loa.', text_color=BLUE)
         self.after(500, self._clock)
 
     def on_close(self):

@@ -1,11 +1,11 @@
-GHI ÂM ZALO PC 2.4.0
+GHI ÂM ZALO PC 2.7.0
 
 Hướng dẫn mới: HUONG_DAN_CAI_DAT.md
 Sao lưu / chia sẻ GitHub: HUONG_DAN_GITHUB.md
 Phát triển mã nguồn: README.md
 
 Giao diện: Cài đặt > Giao diện > Sáng / Tối.
-Chuyển máy: tải gói ZIP, giải nén và chạy Ghi-Am-Zalo-PC-2.4.0-Setup.exe.
+Chuyển máy: tải gói ZIP, giải nén và chạy Ghi-Am-Zalo-PC-2.7.0-Setup.exe.
 Không cần cài Python hoặc FFmpeg trên máy sử dụng.
 Trước khi nâng cấp: Dừng & lưu, rồi Thoát ứng dụng từ khay hệ thống.
 Các bản ghi và cài đặt được giữ lại.

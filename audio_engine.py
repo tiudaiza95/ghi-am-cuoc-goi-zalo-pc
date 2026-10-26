@@ -18,6 +18,7 @@ import wave
 from array import array
 import uuid
 import psutil
+from app_paths import app_root
 from recording_names import recording_stem
 from recording_library import atomic_json, read_json, unique_path, track_duration, live_owner
 
@@ -33,7 +34,7 @@ STOP_TIMEOUT = 3
 
 
 def find_ffmpeg():
-    app_dir = Path(sys.executable).parent if getattr(sys, 'frozen', False) else Path(__file__).resolve().parent
+    app_dir = app_root()
     bundled = app_dir / 'tools' / 'ffmpeg.exe'
     if bundled.is_file():
         return str(bundled)
@@ -219,6 +220,8 @@ class AudioSession:
         self.elapsed = 0.0
         self.levels = {'speaker': 0.0, 'microphone': 0.0}
         self._launch_time = None
+        self.session_details = {}
+        self._ended_at = None
 
     def start(self, microphone: int, speaker: int, folder: Path, file_kind: str, caller_name: str = ''):
         if self.state != 'idle':
@@ -228,6 +231,9 @@ class AudioSession:
         if not find_ffmpeg():
             raise RuntimeError('Không tìm thấy FFmpeg. Vui lòng mở lại ứng dụng sau khi cài FFmpeg.')
         folder.mkdir(parents=True, exist_ok=True)
+        if shutil.disk_usage(folder).free < 256 * 1024 * 1024:
+            raise RuntimeError('Ổ lưu bản ghi còn dưới 256 MB. Hãy giải phóng dung lượng trước khi ghi.')
+        self._storage_checked = 0.0
         temp = Path(tempfile.mkdtemp(prefix='zcc_temp_', dir=folder))
         self._temporary = temp
         self._stop = self._context.Event()
@@ -238,6 +244,7 @@ class AudioSession:
         self.levels = {'speaker': 0.0, 'microphone': 0.0}
         self._file_kind = file_kind
         self._session_date = datetime.now()
+        self._ended_at = None
         filename = recording_stem(caller_name, self._session_date)
         dest = folder / f'{filename}.{file_kind.lower()}'
         i = 2
@@ -247,7 +254,8 @@ class AudioSession:
         self.recording_file = dest
         atomic_json(temp / 'session.json', {'pid': os.getpid(), 'process_created': psutil.Process().create_time(),
                     'active': True, 'destination': str(dest), 'format': file_kind,
-                    'created': datetime.now().isoformat()})
+                    'created': self._session_date.isoformat(),
+                    'session_details': dict(self.session_details)})
         self._workers = [
             self._context.Process(name='speaker', target=capture_process,
                                   args=('speaker', speaker, temp / 'speaker.wav', self._stop)),
@@ -291,6 +299,15 @@ class AudioSession:
         if self.state not in ('starting', 'recording'):
             return False
         self.elapsed = max(0, time.monotonic() - self.recorded_from) if self.recorded_from else 0
+        self._ended_at = datetime.now().isoformat()
+        if self._temporary:
+            try:
+                manifest_path = self._temporary / 'session.json'
+                manifest = read_json(manifest_path)
+                manifest['ended_at'] = self._ended_at
+                atomic_json(manifest_path, manifest)
+            except OSError as ex:
+                self.events.put(('info', 'Không lưu được thời điểm kết thúc: ' + str(ex)))
         self.state = 'saving'
         self._stop.set()
         threading.Thread(target=self._complete, daemon=True).start()
@@ -298,6 +315,19 @@ class AudioSession:
 
     def error_if_any(self) -> str | None:
         self._read_worker_status()
+        if self.state in ('starting', 'recording') and self._temporary and time.monotonic() - getattr(self, '_storage_checked', 0) >= 5:
+            self._storage_checked = time.monotonic()
+            try:
+                if shutil.disk_usage(self._temporary).free < 128 * 1024 * 1024:
+                    with self._lock:
+                        warning = 'Dung lượng còn dưới 128 MB; dừng thu để lưu phần đã ghi.'
+                        if warning not in self._faults:
+                            self._faults.append(warning)
+            except OSError as ex:
+                with self._lock:
+                    warning = 'Không truy cập được ổ lưu bản ghi: ' + str(ex)
+                    if warning not in self._faults:
+                        self._faults.append(warning)
         with self._lock:
             return '; '.join(self._faults) if self._faults else None
 
@@ -347,12 +377,19 @@ class AudioSession:
         encode_audio(sources['speaker'], sources['microphone'], self._started, destination, kind)
         self.recording_file = destination
         duration = max(track_duration(sources[r]) for r in available)
+        manifest = read_json(temp / 'session.json')
+        details = manifest.get('session_details', {})
+        ended_at = (manifest.get('ended_at') if recovering else self._ended_at)
         try:
             atomic_json(destination.with_suffix(destination.suffix + '.json'),
                         {'duration': duration, 'status': label, 'sources': available,
-                         'created': datetime.now().isoformat(), 'recovered': recovering})
+                         'created': datetime.now().isoformat(), 'recovered': recovering,
+                         'started_at': manifest.get('created'), 'ended_at': ended_at,
+                         'devices': details.get('devices', {}), 'purpose': details.get('purpose', 'call'),
+                         'source_durations': {r: track_duration(sources[r]) for r in available},
+                         'warnings': list(self._faults)})
             manifest = read_json(temp / 'session.json')
-            manifest.update(active=False, saved_to=str(destination))
+            manifest.update(active=False, saved_to=str(destination), ended_at=ended_at)
             atomic_json(temp / 'session.json', manifest)
         except OSError as ex:
             self.events.put(('info', f'Đã lưu âm thanh, nhưng chưa lưu được thông tin bổ sung: {ex}'))

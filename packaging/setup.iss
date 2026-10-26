@@ -1,10 +1,10 @@
-#define AppVersion "2.4.0"
+﻿#define AppVersion "2.7.0"
 [Setup]
 AppId={{20AA6AF9-727D-445F-BB49-852A942694B1}
 AppName=Ghi Âm Zalo PC
 AppVersion={#AppVersion}
 AppVerName=Ghi Âm Zalo PC {#AppVersion}
-DefaultDirName={localappdata}\Programs\Zalo Call Companion
+DefaultDirName={localappdata}\Programs\Ghi Âm Zalo PC
 DefaultGroupName=Ghi Âm Zalo PC
 PrivilegesRequired=lowest
 ArchitecturesAllowed=x64compatible
@@ -13,14 +13,15 @@ MinVersion=10.0
 WizardStyle=modern
 SetupIconFile=..\assets\companion.ico
 UninstallDisplayIcon={app}\ZaloCallCompanion.exe
-OutputDir=..\release\Ghi-Am-Zalo-PC-2.4.0
-OutputBaseFilename=Ghi-Am-Zalo-PC-2.4.0-Setup
+OutputDir=..\release\Ghi-Am-Zalo-PC-2.7.0
+OutputBaseFilename=Ghi-Am-Zalo-PC-2.7.0-Setup
 Compression=lzma2
 SolidCompression=yes
 AppMutex=Local\ZaloCallCompanion.Instance
 CloseApplications=no
 RestartApplications=no
 DisableProgramGroupPage=yes
+UsePreviousAppDir=no
 [Tasks]
 Name: "desktopicon"; Description: "Create a desktop shortcut"; Flags: checkedonce
 [Files]

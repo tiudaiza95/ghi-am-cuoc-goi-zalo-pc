@@ -83,3 +83,43 @@ def autostart_enabled():
             return bool(winreg.QueryValueEx(key, 'ZaloCallCompanion')[0])
     except OSError:
         return False
+
+
+TRAY_STATES = {
+    'idle': ('Đang chờ cuộc gọi', '#0A84FF'),
+    'starting': ('Đang mở thiết bị', '#FF9F0A'),
+    'recording': ('Đang thu âm', '#FF453A'),
+    'saving': ('Đang lưu bản ghi', '#FF9F0A'),
+    'error': ('Có lỗi — mở ứng dụng để kiểm tra', '#BF5AF2'),
+}
+
+
+def tray_state_image(state):
+    from PIL import Image, ImageDraw
+    image = Image.new('RGBA', (64, 64), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(image)
+    color = TRAY_STATES.get(state, TRAY_STATES['idle'])[1]
+    draw.rounded_rectangle((4, 4, 60, 60), radius=18, fill=color)
+    if state == 'recording':
+        draw.ellipse((20, 20, 44, 44), fill='white')
+    elif state == 'error':
+        draw.line((32, 17, 32, 35), fill='white', width=6)
+        draw.ellipse((29, 42, 35, 48), fill='white')
+    elif state in ('starting', 'saving'):
+        draw.line((32, 15, 32, 38), fill='white', width=5)
+        draw.line((22, 29, 32, 39, 42, 29), fill='white', width=5)
+        draw.line((19, 47, 45, 47), fill='white', width=5)
+    else:
+        draw.rounded_rectangle((25, 14, 39, 35), radius=7, fill='white')
+        draw.arc((19, 23, 45, 43), 0, 180, fill='white', width=4)
+        draw.line((32, 43, 32, 50), fill='white', width=4)
+    return image
+
+
+def update_tray_state(icon, state):
+    state = state if state in TRAY_STATES else 'error'
+    if getattr(icon, '_companion_state', None) == state:
+        return
+    icon.icon = tray_state_image(state)
+    icon.title = 'Ghi Âm Zalo PC — ' + TRAY_STATES[state][0]
+    icon._companion_state = state

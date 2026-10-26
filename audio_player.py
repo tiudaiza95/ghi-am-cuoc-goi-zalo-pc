@@ -10,6 +10,7 @@ class AudioPlayer:
         self.alias = 'zcc_' + uuid.uuid4().hex
         self.path = None
         self.length = 0
+        self.volume = 80
         self.command = command or self._native_command
 
     @staticmethod
@@ -33,6 +34,7 @@ class AudioPlayer:
         try:
             self.command(f'set {self.alias} time format milliseconds')
             self.length = int(self.command(f'status {self.alias} length'))
+            self.set_volume(self.volume)
         except Exception:
             self.close()
             raise
@@ -61,6 +63,16 @@ class AudioPlayer:
             self.command(f'seek {self.alias} to {position}')
             if mode == 'playing':
                 self.command(f'play {self.alias} from {position}')
+
+    def set_volume(self, percent):
+        value = max(0, min(100, int(percent)))
+        if self.path:
+            self.command(f'setaudio {self.alias} volume to {value * 10}')
+        self.volume = value
+
+    def skip(self, seconds):
+        if self.path:
+            self.seek(self.status()[1] + int(seconds * 1000))
 
     def close(self):
         if self.path:

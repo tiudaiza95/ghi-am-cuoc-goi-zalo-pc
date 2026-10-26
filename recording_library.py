@@ -74,12 +74,28 @@ def list_recordings(folder):
     for path in Path(folder).iterdir() if Path(folder).is_dir() else []:
         if not path.is_file() or path.suffix.lower() not in ('.mp3', '.wav') or '.partial.' in path.name:
             continue
+        try:
+            stat = path.stat()
+        except OSError:
+            continue  # Another process may move a file during a refresh.
         metadata = read_json(path.with_suffix(path.suffix + '.json'))
-        records.append({'path': path, 'name': path.name, 'size': path.stat().st_size,
-                        'date': datetime.fromtimestamp(path.stat().st_mtime).strftime('%d/%m/%Y %H:%M'),
-                        'duration': metadata.get('duration', track_duration(path) if path.suffix.lower() == '.wav' else None),
+        try:
+            recorded_at = datetime.fromisoformat(metadata.get('started_at'))
+        except (ValueError, TypeError):
+            recorded_at = datetime.fromtimestamp(stat.st_mtime)
+        duration = metadata.get('duration')
+        try:
+            duration = float(duration)
+            if not __import__('math').isfinite(duration) or duration < 0:
+                duration = None
+        except (TypeError, ValueError, OverflowError):
+            duration = track_duration(path) if path.suffix.lower() == '.wav' else None
+        records.append({'path': path, 'name': path.name, 'size': stat.st_size,
+                        'date': recorded_at.strftime('%d/%m/%Y %H:%M'),
+                        'duration': duration, 'metadata': metadata,
+                        'timestamp': recorded_at.isoformat(),
                         'status': metadata.get('status', 'Bản ghi cũ')})
-    return sorted(records, key=lambda r: r['path'].stat().st_mtime, reverse=True)
+    return sorted(records, key=lambda r: r['timestamp'], reverse=True)
 
 
 def rename_recording(path, name):
@@ -103,3 +119,117 @@ def rename_recording(path, name):
             dest.rename(path)
             raise
     return dest
+
+
+def matches_date(record, period, now=None):
+    from datetime import timedelta
+    now = now or datetime.now()
+    try:
+        day = datetime.fromisoformat(record['timestamp']).date()
+    except (ValueError, KeyError, TypeError):
+        return period == 'Tất cả ngày'
+    if period == 'Hôm nay':
+        return day == now.date()
+    if period == '7 ngày qua':
+        return now.date() - timedelta(days=6) <= day <= now.date()
+    if period == '30 ngày qua':
+        return now.date() - timedelta(days=29) <= day <= now.date()
+    return True
+
+
+def session_description(path):
+    data = read_json(Path(path).with_suffix(Path(path).suffix + '.json'))
+    def stamp(value):
+        try:
+            return datetime.fromisoformat(value).strftime('%H:%M:%S • %d/%m/%Y')
+        except (ValueError, TypeError):
+            return 'Không có dữ liệu (bản cũ hoặc phiên bị gián đoạn)'
+    devices = data.get('devices') or {}
+    lines = [f"Bắt đầu: {stamp(data.get('started_at'))}",
+             f"Kết thúc: {stamp(data.get('ended_at'))}",
+             f"Micro: {devices.get('microphone', 'Chưa lưu thông tin')}",
+             f"Loa / tai nghe: {devices.get('speaker', 'Chưa lưu thông tin')}",
+             f"Nguồn thu: {data.get('status', 'Không có dữ liệu')}"]
+    for role, duration in (data.get('source_durations') or {}).items():
+        lines.append(f"{'Micro' if role == 'microphone' else 'Loa'}: {duration:.1f} giây")
+    if data.get('warnings'):
+        lines.append('Lưu ý: ' + '; '.join(data['warnings']))
+    lines.append('Đủ hai nguồn nghĩa là có dữ liệu ở cả hai luồng, không đảm bảo cả hai đều có tiếng nói.')
+    return '\n'.join(lines)
+
+
+def search_key(text):
+    import unicodedata
+    value = unicodedata.normalize('NFD', str(text).casefold()).replace('đ', 'd')
+    return ''.join(c for c in value if unicodedata.category(c) != 'Mn')
+
+
+def update_record_metadata(path, **changes):
+    path = Path(path)
+    if not path.is_file():
+        raise FileNotFoundError('Bản ghi đã được di chuyển hoặc xóa.')
+    sidecar = path.with_suffix(path.suffix + '.json')
+    data = read_json(sidecar)
+    # Preserve the recording date before creating metadata for a legacy file.
+    data.setdefault('started_at', datetime.fromtimestamp(path.stat().st_mtime).isoformat())
+    data.update(changes)
+    atomic_json(sidecar, data)
+    return data
+
+
+def filter_records(records, query='', period='Tất cả ngày', starred=False, order='Mới nhất'):
+    query = search_key(query.strip())
+    items = [r for r in records if query in search_key(r['name'] + ' ' + str(r.get('metadata', {}).get('note', '')))
+             and matches_date(r, period) and (not starred or r.get('metadata', {}).get('favorite') is True)]
+    if order == 'Tên A–Z':
+        return sorted(items, key=lambda r: search_key(r['name']))
+    if order == 'Dài nhất':
+        return sorted(items, key=lambda r: r.get('duration') or 0, reverse=True)
+    return sorted(items, key=lambda r: r.get('timestamp', ''), reverse=order != 'Cũ nhất')
+
+
+def filter_date_range(records, start='', end=''):
+    def parse(value):
+        try:
+            return datetime.strptime(value.strip(), '%d/%m/%Y').date() if value.strip() else None
+        except ValueError:
+            raise ValueError('Ngày phải theo dạng DD/MM/YYYY, ví dụ 27/10/2026.') from None
+    first, last = parse(start), parse(end)
+    if first and last and first > last:
+        raise ValueError('Ngày bắt đầu không được sau ngày kết thúc.')
+    result = []
+    for record in records:
+        try:
+            day = datetime.fromisoformat(record['timestamp']).date()
+        except (ValueError, TypeError, KeyError):
+            continue
+        if (first is None or day >= first) and (last is None or day <= last):
+            result.append(record)
+    return result
+
+
+def export_recordings_csv(records, destination):
+    import csv
+    import tempfile
+    destination = Path(destination)
+    def cell(value):
+        value = str(value if value is not None else '')
+        # Spreadsheet applications must treat user names and notes as text.
+        return "'" + value if value.lstrip().startswith(('=', '+', '-', '@')) else value
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(mode='w', encoding='utf-8-sig', newline='',
+                dir=destination.parent, suffix='.tmp', delete=False) as stream:
+            temporary = Path(stream.name)
+            writer = csv.writer(stream)
+            writer.writerow(['Tên bản ghi', 'Ngày ghi', 'Thời lượng (giây)', 'Dung lượng (byte)',
+                             'Trạng thái', 'Quan trọng', 'Ghi chú'])
+            for record in records:
+                data = record.get('metadata', {})
+                writer.writerow([cell(record['name']), cell(record.get('date')), record.get('duration'),
+                    record.get('size'), cell(record.get('status')), 'Có' if data.get('favorite') else '',
+                    cell(data.get('note'))])
+        temporary.replace(destination)
+    finally:
+        if temporary and temporary.exists():
+            temporary.unlink()

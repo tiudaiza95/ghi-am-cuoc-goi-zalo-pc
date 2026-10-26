@@ -1,22 +1,9 @@
-﻿param(
-    [Parameter(Mandatory=$true)][string]$Source
-)
-$ErrorActionPreference = "Stop"
-if (-not (Test-Path -LiteralPath $Source -PathType Leaf)) {
-    throw "Khong tim thay tep EXE: $Source"
-}
-$appDir = Join-Path $env:LOCALAPPDATA 'Programs\Zalo Call Companion'
-New-Item -ItemType Directory -Force -Path $appDir | Out-Null
-$target = Join-Path $appDir 'ZaloCallCompanion.exe'
-Copy-Item -LiteralPath $Source -Destination $target -Force
-$desktop = [Environment]::GetFolderPath('Desktop')
-$shortcut = Join-Path $desktop 'Ghi Âm Zalo PC.lnk'
-$shell = New-Object -ComObject WScript.Shell
-$link = $shell.CreateShortcut($shortcut)
-$link.TargetPath = $target
-$link.WorkingDirectory = $appDir
-$link.IconLocation = "$target,0"
-$link.Description = 'Ghi Am Zalo PC - Ghi am cuoc goi va luu tren may.'
+﻿param([string]$Source = (Join-Path (Split-Path $PSScriptRoot) 'ZaloCallCompanion.exe'))
+$ErrorActionPreference = 'Stop'
+if (-not (Test-Path -LiteralPath $Source)) { throw 'Chưa có EXE đã cài. Hãy chạy bộ cài trước.' }
+$exePath = (Resolve-Path -LiteralPath $Source).Path
+$link = (New-Object -ComObject WScript.Shell).CreateShortcut((Join-Path ([Environment]::GetFolderPath('Desktop')) 'Ghi Âm Zalo PC.lnk'))
+$link.TargetPath = $exePath
+$link.WorkingDirectory = Split-Path $exePath
+$link.IconLocation = "$exePath,0"
 $link.Save()
-Write-Host "Da cai: $target"
-Write-Host "Da tao shortcut: $shortcut"

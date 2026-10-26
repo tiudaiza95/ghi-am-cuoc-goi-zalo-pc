@@ -5,6 +5,7 @@ import customtkinter as ctk
 from pathlib import Path
 import ui_layout
 from library_window import LibraryWindow
+from ui_effects import cancel_root_callbacks
 
 
 class ThemeWidgetTests(unittest.TestCase):
@@ -17,7 +18,7 @@ class ThemeWidgetTests(unittest.TestCase):
                 for name in ('hide_to_tray', 'open_library', 'manual_confirm', 'stop_recording',
                              'toggle_auto_record', 'update_auto_hint', 'reload_devices', 'persist',
                              'change_format', 'choose_folder', 'open_folder', 'toggle_new_windows',
-                             'toggle_autostart', 'open_zalo', 'diagnostics', 'on_close', 'export_logs', 'log', 'change_theme'):
+                             'toggle_autostart', 'open_zalo', 'diagnostics', 'on_close', 'export_logs', 'log', 'change_theme', 'toggle_motion', 'test_audio'):
                     setattr(root, name, Mock())
                 root.auto_record = True
                 root.appearance = 'Dark'
@@ -38,5 +39,6 @@ class ThemeWidgetTests(unittest.TestCase):
                     self.assertEqual(ttk.Style(library).lookup('Recordings.Treeview', 'background'), expected)
                 library.destroy()
         finally:
+            cancel_root_callbacks(root)
             root.destroy()
             ctk.set_appearance_mode('Light')
