@@ -29,7 +29,15 @@ class AudioPlayer:
     def load(self, path):
         self.close()
         path = Path(path).resolve(strict=True)
-        self.command(f'open "{path}" type mpegvideo alias {self.alias}')
+        try:
+            self.command(f'open "{path}" type mpegvideo alias {self.alias}')
+        except Exception:
+            # Fall back to Windows 8.3 short path if MCI parser struggles with Unicode
+            buf = ctypes.create_unicode_buffer(1024)
+            kernel32 = ctypes.WinDLL('kernel32', use_last_error=True)
+            res = kernel32.GetShortPathNameW(str(path), buf, len(buf))
+            short_path = buf.value if res > 0 else str(path)
+            self.command(f'open "{short_path}" type mpegvideo alias {self.alias}')
         self.path = path
         try:
             self.command(f'set {self.alias} time format milliseconds')

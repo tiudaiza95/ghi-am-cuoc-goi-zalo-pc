@@ -106,5 +106,26 @@ class PlayerTests(unittest.TestCase):
                     player.close()
                 self.assertIsNone(player.path)
 
+    def test_load_falls_back_to_short_path_on_mci_error(self):
+        commands = []
+        def mock_command(cmd):
+            commands.append(cmd)
+            # Fail initial open with full path to simulate MCI Unicode parsing error
+            if cmd.startswith('open "') and 'test_file.mp3' in cmd and '~' not in cmd:
+                raise RuntimeError('MCI parser error')
+            if 'status ' in cmd and 'length' in cmd:
+                return '5000'
+            return ''
+
+        with tempfile.TemporaryDirectory() as folder:
+            f_path = Path(folder) / 'test_file.mp3'
+            f_path.write_bytes(b'123')
+            player = AudioPlayer(command=mock_command)
+            player.load(f_path)
+            self.assertEqual(player.length, 5000)
+            open_commands = [c for c in commands if c.startswith('open ')]
+            self.assertEqual(len(open_commands), 2)
+            player.close()
+
 if __name__ == '__main__':
     unittest.main()
