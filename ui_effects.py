@@ -51,6 +51,7 @@ def fade_in(window, enabled=True):
     except Exception:
         window.attributes('-alpha', 1.0)
 
+
 class ManagedToplevel(ctk.CTkToplevel):
     """Cancel callbacks owned by a window before Tk removes its commands."""
     def __init__(self, *args, **kwargs):
@@ -78,6 +79,54 @@ class ManagedToplevel(ctk.CTkToplevel):
         for job in tuple(self._owned_after):
             self.after_cancel(job)
         super().destroy()
+
+
+class MiniOverlay(ManagedToplevel):
+    """Floating draggable mini pill with timer, stop button and expand button."""
+    def __init__(self, parent, on_stop, on_expand):
+        super().__init__(parent)
+        self.overrideredirect(True)
+        self.attributes('-topmost', True)
+        self.configure(fg_color=('#1C1C1E', '#1C1C1E'))
+        self.geometry('260x52+120+120')
+        self._drag_data = {'x': 0, 'y': 0}
+
+        container = ctk.CTkFrame(self, fg_color=('#2C2C2E', '#2C2C2E'), corner_radius=16, border_width=1, border_color=('#3A3A3C', '#3A3A3C'))
+        container.pack(fill='both', expand=True, padx=2, pady=2)
+
+        container.bind('<Button-1>', self._start_drag)
+        container.bind('<B1-Motion>', self._on_drag)
+
+        self.dot = ctk.CTkLabel(container, text='●', text_color='#FF453A', font=('Segoe UI', 16, 'bold'), width=24)
+        self.dot.pack(side='left', padx=(10, 2))
+        self.dot.bind('<Button-1>', self._start_drag)
+        self.dot.bind('<B1-Motion>', self._on_drag)
+
+        self.timer = ctk.CTkLabel(container, text='00:00:00', text_color='#FFFFFF', font=('Consolas', 15, 'bold'))
+        self.timer.pack(side='left', padx=4)
+        self.timer.bind('<Button-1>', self._start_drag)
+        self.timer.bind('<B1-Motion>', self._on_drag)
+
+        ctk.CTkButton(container, text='■', width=30, height=30, corner_radius=8,
+                      fg_color='#FF3B30', hover_color='#D32F2F', text_color='#FFFFFF',
+                      font=('Segoe UI', 12, 'bold'), command=on_stop).pack(side='right', padx=(4, 8))
+
+        ctk.CTkButton(container, text='⤢', width=30, height=30, corner_radius=8,
+                      fg_color=('#3A3A3C', '#3A3A3C'), hover_color=('#48484A', '#48484A'), text_color='#FFFFFF',
+                      font=('Segoe UI', 13, 'bold'), command=on_expand).pack(side='right', padx=2)
+
+    def _start_drag(self, event):
+        self._drag_data['x'] = event.x_root - self.winfo_x()
+        self._drag_data['y'] = event.y_root - self.winfo_y()
+
+    def _on_drag(self, event):
+        x = event.x_root - self._drag_data['x']
+        y = event.y_root - self._drag_data['y']
+        self.geometry(f"+{x}+{y}")
+
+    def update_time(self, time_str):
+        if self.winfo_exists():
+            self.timer.configure(text=time_str)
 
 
 def cancel_root_callbacks(root):

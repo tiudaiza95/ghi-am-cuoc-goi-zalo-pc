@@ -158,7 +158,7 @@ def capture_track(role, dev_index, target, stop_signal, started, faults, lock, s
             pa.terminate()
 
 
-def encode_audio(speaker_file, microphone_file, started, destination, kind):
+def encode_audio(speaker_file, microphone_file, started, destination, kind, channel_mode='mixed', normalize=False):
     ffmpeg = find_ffmpeg()
     if not ffmpeg:
         raise RuntimeError('Không tìm thấy FFmpeg. Chạy: winget install -e --id Gyan.FFmpeg, rồi mở lại ứng dụng.')
@@ -171,14 +171,31 @@ def encode_audio(speaker_file, microphone_file, started, destination, kind):
     origin = min((started.get(role, 0) for role, _ in tracks), default=0)
     cmd = [ffmpeg, '-hide_banner', '-loglevel', 'error', '-nostdin', '-n']
     graph = []
+    track_roles = [role for role, _ in tracks]
     for index, (role, path) in enumerate(tracks):
         cmd += ['-i', str(path)]
         delay = max(0, round(1000 * (started.get(role, origin) - origin)))
         graph.append(f'[{index}:a]aresample={OUTPUT_RATE},adelay={delay}:all=1[a{index}]')
-    if len(tracks) == 2:
-        graph.append('[a0][a1]amix=inputs=2:duration=longest:dropout_transition=0:normalize=0,alimiter=limit=0.95[out]')
+    if len(tracks) == 2 and channel_mode == 'split':
+        mic_idx = track_roles.index('microphone')
+        spk_idx = track_roles.index('speaker')
+        graph.append(f'[a{mic_idx}]aformat=channel_layouts=mono[mic_m]')
+        graph.append(f'[a{spk_idx}]aformat=channel_layouts=mono[spk_m]')
+        filter_parts = ['[mic_m][spk_m]amerge=inputs=2']
+    elif len(tracks) == 2:
+        filter_parts = ['[a0][a1]amix=inputs=2:duration=longest:dropout_transition=0:normalize=0']
     else:
-        graph.append('[a0]alimiter=limit=0.95[out]')
+        filter_parts = ['[a0]']
+    if normalize:
+        if filter_parts == ['[a0]']:
+            filter_parts = ['[a0]dynaudnorm=f=150:g=15']
+        else:
+            filter_parts.append('dynaudnorm=f=150:g=15')
+    if filter_parts == ['[a0]']:
+        filter_parts = ['[a0]alimiter=limit=0.95[out]']
+    else:
+        filter_parts.append('alimiter=limit=0.95[out]')
+    graph.append(','.join(filter_parts))
     cmd += ['-filter_complex', ';'.join(graph), '-map', '[out]', '-ac', '2', '-ar', str(OUTPUT_RATE)]
     if kind == 'MP3':
         cmd += ['-c:a', 'libmp3lame', '-b:a', '192k']
@@ -222,8 +239,11 @@ class AudioSession:
         self._launch_time = None
         self.session_details = {}
         self._ended_at = None
+        self._channel_mode = 'mixed'
+        self._normalize = False
 
-    def start(self, microphone: int, speaker: int, folder: Path, file_kind: str, caller_name: str = ''):
+    def start(self, microphone: int, speaker: int, folder: Path, file_kind: str, caller_name: str = '',
+              channel_mode: str = 'mixed', normalize: bool = False):
         if self.state != 'idle':
             return False
         if pyaudio is None:
@@ -243,6 +263,8 @@ class AudioSession:
         self.elapsed = 0.0
         self.levels = {'speaker': 0.0, 'microphone': 0.0}
         self._file_kind = file_kind
+        self._channel_mode = channel_mode
+        self._normalize = normalize
         self._session_date = datetime.now()
         self._ended_at = None
         filename = recording_stem(caller_name, self._session_date)
@@ -374,7 +396,11 @@ class AudioSession:
         if incomplete:
             destination = destination.with_stem(destination.stem + ' - ' + label)
         destination = unique_path(destination)
-        encode_audio(sources['speaker'], sources['microphone'], self._started, destination, kind)
+        if getattr(self, '_channel_mode', 'mixed') != 'mixed' or getattr(self, '_normalize', False):
+            encode_audio(sources['speaker'], sources['microphone'], self._started, destination, kind,
+                         channel_mode=self._channel_mode, normalize=self._normalize)
+        else:
+            encode_audio(sources['speaker'], sources['microphone'], self._started, destination, kind)
         self.recording_file = destination
         duration = max(track_duration(sources[r]) for r in available)
         manifest = read_json(temp / 'session.json')
@@ -387,6 +413,8 @@ class AudioSession:
                          'started_at': manifest.get('created'), 'ended_at': ended_at,
                          'devices': details.get('devices', {}), 'purpose': details.get('purpose', 'call'),
                          'source_durations': {r: track_duration(sources[r]) for r in available},
+                         'channel_mode': getattr(self, '_channel_mode', 'mixed'),
+                         'normalized': getattr(self, '_normalize', False),
                          'warnings': list(self._faults)})
             manifest = read_json(temp / 'session.json')
             manifest.update(active=False, saved_to=str(destination), ended_at=ended_at)

@@ -16,17 +16,19 @@ import json
 import os
 from pathlib import Path
 import queue
+import shutil
 import sys
+import threading
 import time
 from datetime import datetime
 from tkinter import filedialog, messagebox
 
 import customtkinter as ctk
 from recording_names import caller_from_title
-from recording_library import atomic_json, recovery_candidates, read_json
+from recording_library import atomic_json, recovery_candidates, read_json, cleanup_old_recordings
 from library_window import LibraryWindow
-from ui_effects import ManagedToplevel, cancel_root_callbacks
-from desktop_support import SingleInstance, setup_logger, create_tray, set_autostart, autostart_enabled, update_tray_state
+from ui_effects import ManagedToplevel, cancel_root_callbacks, MiniOverlay
+from desktop_support import SingleInstance, setup_logger, create_tray, set_autostart, autostart_enabled, update_tray_state, GlobalHotkeyListener
 import logging
 from app_paths import app_root, resolve_recording_folder, stored_recording_folder
 
@@ -37,7 +39,7 @@ from zalo_detector import (
 )
 
 APP = 'Ghi Âm Zalo PC'
-VERSION = '2.7.0 • Windows'
+VERSION = '2.8.0 • Windows'
 BG = ('#F2F2F7', '#111114')
 SURFACE = ('#FFFFFF', '#1C1C1E')
 SURFACE_2 = ('#E5E5EA', '#38383A')
@@ -196,6 +198,26 @@ class Companion(ctk.CTk):
         self.speakers = []
         self.logs = []
         self.close_requested = False
+        self.mini_overlay = None
+        self.channel_mode = self.settings.get('channel_mode', 'mixed')
+        self.normalize = bool(self.settings.get('normalize', False))
+        self.retention_days = int(self.settings.get('retention_days', 0))
+        self.backup_folder = str(self.settings.get('backup_folder', ''))
+        self.enable_hotkey = bool(self.settings.get('enable_hotkey', True))
+        self.floating_widget = bool(self.settings.get('floating_widget', True))
+        self.gemini_api_key = str(self.settings.get('gemini_api_key', ''))
+
+        self.hotkey_listener = None
+        if self.enable_hotkey:
+            try:
+                self.hotkey_listener = GlobalHotkeyListener(self.events)
+                self.hotkey_listener.start()
+            except Exception as ex:
+                self.logger.debug('Hotkey error: %s', ex)
+
+        if self.retention_days > 0:
+            self.after(3000, self._run_retention_cleanup)
+
         self._build_ui()
         self.reload_devices()
         self.after(400, self._poll)
@@ -301,9 +323,95 @@ class Companion(ctk.CTk):
             except OSError as ex:
                 messagebox.showerror('Xuất nhật ký', str(ex), parent=self)
 
+    def _run_retention_cleanup(self):
+        try:
+            count = cleanup_old_recordings(self.folder, self.retention_days)
+            if count > 0:
+                self.log(f'Tự động dọn dẹp: đã xóa {count} bản ghi cũ hơn {self.retention_days} ngày.')
+        except Exception as ex:
+            self.logger.debug('Cleanup error: %s', ex)
+
+    def change_channel_mode(self, choice):
+        self.channel_mode = 'split' if 'Tách' in choice else 'mixed'
+        self.persist()
+        self.log('Chế độ âm thanh: ' + ('TÁCH KÊNH (Trái: Bạn / Phải: Khách)' if self.channel_mode == 'split' else 'TRỘN CHUNG'))
+
+    def toggle_normalize(self):
+        self.normalize = bool(self.normalize_switch.get())
+        self.persist()
+        self.log('Cân bằng âm lượng (Normalize): ' + ('BẬT' if self.normalize else 'TẮT'))
+
+    def change_retention(self, choice):
+        self.retention_days = int(choice.split()[0]) if choice != 'Vĩnh viễn' else 0
+        self.persist()
+        self.log(f'Thời gian lưu trữ bản ghi: {choice}')
+
+    def choose_backup_folder(self):
+        chosen = filedialog.askdirectory(parent=self, title='Chọn thư mục sao lưu phụ (OneDrive / Google Drive / USB)')
+        if chosen:
+            self.backup_folder = chosen
+            self.backup_label.configure(text='Sao lưu sang: ' + chosen)
+            self.persist()
+            self.log('Đã đặt thư mục sao lưu phụ: ' + chosen)
+
+    def clear_backup_folder(self):
+        self.backup_folder = ''
+        self.backup_label.configure(text='Chưa chọn thư mục sao lưu phụ')
+        self.persist()
+        self.log('Đã bỏ thư mục sao lưu phụ.')
+
+    def toggle_hotkey(self):
+        self.enable_hotkey = bool(self.hotkey_switch.get())
+        if self.enable_hotkey and not self.hotkey_listener:
+            try:
+                self.hotkey_listener = GlobalHotkeyListener(self.events)
+                self.hotkey_listener.start()
+                self.log('Phím tắt Ctrl+Shift+R: BẬT')
+            except Exception as ex:
+                self.log('Không kích hoạt được phím tắt: ' + str(ex))
+        elif not self.enable_hotkey and self.hotkey_listener:
+            try:
+                self.hotkey_listener.stop()
+            except Exception:
+                pass
+            self.hotkey_listener = None
+            self.log('Phím tắt Ctrl+Shift+R: TẮT')
+        self.persist()
+
+    def toggle_floating(self):
+        self.floating_widget = bool(self.mini_switch.get())
+        self.persist()
+        self.log('Thanh nổi Mini: ' + ('BẬT' if self.floating_widget else 'TẮT'))
+
+    def save_gemini_key(self):
+        key = self.gemini_key_entry.get().strip()
+        self.gemini_api_key = key
+        self.persist()
+        self.log('Đã lưu Gemini API Key.')
+        messagebox.showinfo('Trợ lý AI', 'Đã lưu Gemini API Key thành công!', parent=self)
+
+    def clear_gemini_key(self):
+        self.gemini_api_key = ''
+        self.gemini_key_entry.delete(0, 'end')
+        self.persist()
+        self.log('Đã xóa Gemini API Key.')
+        messagebox.showinfo('Trợ lý AI', 'Đã xóa API Key.', parent=self)
+
     def destroy(self):
         self._destroyed = True
         cancel_root_callbacks(self)
+        if hasattr(self, 'hotkey_listener') and self.hotkey_listener:
+            try:
+                self.hotkey_listener.stop()
+            except Exception:
+                pass
+            self.hotkey_listener = None
+        if hasattr(self, 'mini_overlay') and self.mini_overlay and self.mini_overlay.winfo_exists():
+            try:
+                self.mini_overlay.destroy()
+            except Exception:
+                pass
+            self.mini_overlay = None
         if self.tray:
             self.tray.stop()
             self.tray = None
@@ -342,7 +450,14 @@ class Companion(ctk.CTk):
                 'microphone': self.mic_combo.get(),
                 'speaker': self.out_combo.get(),
                 'detect_new_windows': bool(self.detector.allow_new_windows),
-                'auto_record': self.auto_record}
+                'auto_record': self.auto_record,
+                'channel_mode': getattr(self, 'channel_mode', 'mixed'),
+                'normalize': getattr(self, 'normalize', False) is True,
+                'retention_days': int(getattr(self, 'retention_days', 0)),
+                'backup_folder': getattr(self, 'backup_folder', ''),
+                'enable_hotkey': getattr(self, 'enable_hotkey', True) is True,
+                'floating_widget': getattr(self, 'floating_widget', True) is True,
+                'gemini_api_key': getattr(self, 'gemini_api_key', '')}
         self.settings = data
         try:
             save_settings(data)
@@ -537,9 +652,19 @@ class Companion(ctk.CTk):
                 'speaker': next(d['name'] for d in speakers if int(d['index']) == speaker)},
                 'purpose': 'audio_check' if testing else 'call'}
             folder = app_root() / 'Data' / 'AudioChecks' if testing else Path(self.folder)
-            if not self.recorder.start(mic, speaker, folder, self.format_menu.get(), self.current_caller_name):
+            channel_mode = 'mixed' if testing else getattr(self, 'channel_mode', 'mixed')
+            normalize = getattr(self, 'normalize', False)
+            if not self.recorder.start(mic, speaker, folder, self.format_menu.get(), self.current_caller_name,
+                                      channel_mode=channel_mode, normalize=normalize):
                 self.current_call_key = None
                 return
+            if getattr(self, 'floating_widget', True) and not testing:
+                try:
+                    if self.mini_overlay and self.mini_overlay.winfo_exists():
+                        self.mini_overlay.destroy()
+                    self.mini_overlay = MiniOverlay(self, on_stop=self.stop_recording, on_expand=self.show_window)
+                except Exception:
+                    pass
             self._tray_error = False
             self.test_btn.configure(state='disabled')
             self.record_btn.configure(state='disabled')
@@ -573,6 +698,12 @@ class Companion(ctk.CTk):
             self.log('Đang ghép và lưu bản ghi âm thanh...')
 
     def _restore_controls(self):
+        if hasattr(self, 'mini_overlay') and self.mini_overlay and self.mini_overlay.winfo_exists():
+            try:
+                self.mini_overlay.destroy()
+            except Exception:
+                pass
+            self.mini_overlay = None
         self.test_btn.configure(state='normal')
         self.record_btn.configure(state='normal')
         self.stop_btn.configure(state='disabled')
@@ -596,6 +727,20 @@ class Companion(ctk.CTk):
                     self.current_file_label.configure(text='Đã lưu: ' + Path(message).name)
                     self.log('Đã lưu thành công: ' + Path(message).name)
                     self._notify('Đã lưu: ' + Path(message).name)
+                    backup = getattr(self, 'backup_folder', None)
+                    if isinstance(backup, str) and backup.strip() and Path(backup).is_dir():
+                        def do_backup(src_path):
+                            try:
+                                src = Path(src_path)
+                                dest_dir = Path(backup)
+                                shutil.copy2(src, dest_dir / src.name)
+                                sidecar = src.with_suffix(src.suffix + '.json')
+                                if sidecar.is_file():
+                                    shutil.copy2(sidecar, dest_dir / sidecar.name)
+                                self.events.put(('info', f'Đã sao lưu phụ sang: {dest_dir.name}'))
+                            except Exception as e:
+                                self.events.put(('info', f'Lỗi sao lưu phụ: {e}'))
+                        threading.Thread(target=do_backup, args=(message,), daemon=True).start()
                     if self.library and self.library.winfo_exists():
                         self.library.refresh()
                     if getattr(self, '_test_mode', False) is True:
@@ -641,6 +786,13 @@ class Companion(ctk.CTk):
                     self.show_window()
                 elif kind == 'stop':
                     self.stop_recording()
+                elif kind == 'hotkey':
+                    if self.recorder.state in ('starting', 'recording'):
+                        self.log('Phím tắt: Dừng & lưu cuộc gọi.')
+                        self.stop_recording()
+                    elif self.recorder.state == 'idle':
+                        self.log('Phím tắt: Bắt đầu ghi âm.')
+                        self.manual_confirm()
                 elif kind == 'quit':
                     self.show_window()
                     self.on_close()
@@ -717,6 +869,11 @@ class Companion(ctk.CTk):
             if self._test_deadline is not None and time.monotonic() >= self._test_deadline:
                 self._test_deadline = None
                 self.stop_recording()
+        if hasattr(self, 'mini_overlay') and self.mini_overlay and self.mini_overlay.winfo_exists():
+            try:
+                self.mini_overlay.update_time(self.timer_label.cget('text'))
+            except Exception:
+                pass
         if self.recorder.state == 'recording' and self.recorder.recorded_from:
             seconds = int(time.monotonic() - self.recorder.recorded_from)
             self.timer_label.configure(text=f'{seconds//3600:02d}:{seconds//60%60:02d}:{seconds%60:02d}')

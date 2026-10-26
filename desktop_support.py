@@ -5,6 +5,8 @@ import logging
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 import sys
+import threading
+import time
 
 
 def setup_logger(folder):
@@ -123,3 +125,32 @@ def update_tray_state(icon, state):
     icon.icon = tray_state_image(state)
     icon.title = 'Ghi Âm Zalo PC — ' + TRAY_STATES[state][0]
     icon._companion_state = state
+
+
+class GlobalHotkeyListener(threading.Thread):
+    """Listen for Ctrl+Shift+R to toggle recording from anywhere."""
+    def __init__(self, events_queue, modifiers=0x0002 | 0x0004 | 0x4000, vk=0x52):
+        super().__init__(daemon=True)
+        self.events = events_queue
+        self.modifiers = modifiers
+        self.vk = vk
+        self._stop = threading.Event()
+
+    def run(self):
+        user32 = ctypes.WinDLL('user32', use_last_error=True)
+        HOTKEY_ID = 101
+        WM_HOTKEY = 0x0312
+        if not user32.RegisterHotKey(None, HOTKEY_ID, self.modifiers, self.vk):
+            return
+        msg = wintypes.MSG()
+        try:
+            while not self._stop.is_set():
+                if user32.PeekMessageW(ctypes.byref(msg), None, 0, 0, 1):
+                    if msg.message == WM_HOTKEY:
+                        self.events.put(('hotkey', 'toggle'))
+                time.sleep(0.05)
+        finally:
+            user32.UnregisterHotKey(None, HOTKEY_ID)
+
+    def stop(self):
+        self._stop.set()

@@ -233,3 +233,102 @@ def export_recordings_csv(records, destination):
     finally:
         if temporary and temporary.exists():
             temporary.unlink()
+
+
+def cleanup_old_recordings(folder, days):
+    if not days or days <= 0:
+        return 0
+    from datetime import timedelta
+    cutoff = datetime.now() - timedelta(days=days)
+    deleted = 0
+    folder = Path(folder)
+    if not folder.is_dir():
+        return 0
+    for path in folder.iterdir():
+        if not path.is_file() or path.suffix.lower() not in ('.mp3', '.wav'):
+            continue
+        sidecar = path.with_suffix(path.suffix + '.json')
+        meta = read_json(sidecar)
+        if meta.get('favorite') is True:
+            continue
+        try:
+            ts = meta.get('started_at')
+            dt = datetime.fromisoformat(ts) if ts else datetime.fromtimestamp(path.stat().st_mtime)
+        except Exception:
+            dt = datetime.fromtimestamp(path.stat().st_mtime)
+        if dt < cutoff:
+            try:
+                path.unlink(missing_ok=True)
+                sidecar.unlink(missing_ok=True)
+                deleted += 1
+            except OSError:
+                pass
+    return deleted
+
+
+def add_timestamp_mark(path, seconds, label=''):
+    path = Path(path)
+    sidecar = path.with_suffix(path.suffix + '.json')
+    data = read_json(sidecar)
+    marks = data.setdefault('timestamps', [])
+    sec = max(0.0, round(float(seconds), 1))
+    tag = str(label).strip() or f'{int(sec//60):02d}:{int(sec%60):02d}'
+    marks.append({'time': sec, 'label': tag})
+    marks.sort(key=lambda m: m['time'])
+    atomic_json(sidecar, data)
+    return data
+
+
+def remove_timestamp_mark(path, index):
+    path = Path(path)
+    sidecar = path.with_suffix(path.suffix + '.json')
+    data = read_json(sidecar)
+    marks = data.get('timestamps', [])
+    if 0 <= index < len(marks):
+        marks.pop(index)
+        atomic_json(sidecar, data)
+    return data
+
+
+def transcribe_with_gemini(api_key, path):
+    import base64
+    import urllib.request
+    import urllib.error
+    api_key = api_key.strip()
+    if not api_key:
+        raise ValueError('Chưa nhập Gemini API Key. Nhập key trong Cài đặt.')
+    path = Path(path)
+    if not path.is_file():
+        raise FileNotFoundError('Không tìm thấy file âm thanh.')
+    if path.stat().st_size > 20 * 1024 * 1024:
+        raise ValueError('File âm thanh quá 20MB. Hãy chọn bản ghi ngắn hơn hoặc xuất MP3.')
+    raw_bytes = path.read_bytes()
+    b64 = base64.b64encode(raw_bytes).decode('ascii')
+    mime = 'audio/mp3' if path.suffix.lower() == '.mp3' else 'audio/wav'
+    payload = {
+        'contents': [{
+            'parts': [
+                {'text': (
+                    "Bạn là thư ký chuyên nghiệp. Hãy nghe bản ghi âm cuộc gọi này và thực hiện 2 việc bằng tiếng Việt:\n"
+                    "1. Bóc băng nội dung hội thoại chi tiết (kèm tên người nói nếu phân biệt được).\n"
+                    "2. Tóm tắt ngắn gọn các điểm chính và danh sách việc cần làm (Action Items).\n"
+                    "Trình bày rõ ràng, dễ đọc."
+                )},
+                {'inline_data': {'mime_type': mime, 'data': b64}}
+            ]
+        }]
+    }
+    req_data = json.dumps(payload).encode('utf-8')
+    url = f'https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={api_key}'
+    req = urllib.request.Request(url, data=req_data, headers={'Content-Type': 'application/json'}, method='POST')
+    try:
+        with urllib.request.urlopen(req, timeout=90) as resp:
+            body = json.loads(resp.read().decode('utf-8'))
+            text = body['candidates'][0]['content']['parts'][0]['text']
+            update_record_metadata(path, transcription=text)
+            return text
+    except urllib.error.HTTPError as ex:
+        err_msg = ex.read().decode('utf-8', errors='ignore')
+        raise RuntimeError(f'Lỗi Gemini API ({ex.code}): {err_msg[:200]}') from ex
+    except Exception as ex:
+        raise RuntimeError(f'Không kết nối được Gemini API: {ex}') from ex

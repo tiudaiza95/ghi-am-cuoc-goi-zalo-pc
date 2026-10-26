@@ -58,7 +58,6 @@ def build_ui(app):
     app.connection_hint.pack(anchor='w')
     app.connection_chip = label(connection, 'ĐANG CHỜ', 11, BLUE, bold=True)
     app.connection_chip.pack(side='right', padx=20)
-    # Existing connection updates also address this compact label.
     app.zalo_sidebar_state = label(status, '', 10, MUTED)
     app.zalo_sidebar_state.pack(anchor='w')
 
@@ -127,16 +126,28 @@ def build_ui(app):
             command=lambda _: app.persist())
         combo.pack(fill='x', padx=20, pady=(0, 8))
         setattr(app, key, combo)
+
+    label(devices, 'Chế độ âm thanh:', 12, MUTED).pack(anchor='w', padx=20, pady=(6, 4))
+    app.channel_menu = ctk.CTkSegmentedButton(devices,
+        values=['Trộn 2 nguồn (Mixed)', 'Tách kênh (Trái: Bạn / Phải: Khách)'],
+        command=lambda c: app.change_channel_mode(c) if hasattr(app, 'change_channel_mode') else None, height=34)
+    app.channel_menu.pack(fill='x', padx=20, pady=(0, 10))
+    app.channel_menu.set('Tách kênh (Trái: Bạn / Phải: Khách)' if getattr(app, 'channel_mode', 'mixed') == 'split' else 'Trộn 2 nguồn (Mixed)')
+
+    app.normalize_switch = ctk.CTkSwitch(devices, text='Tự động cân bằng âm lượng (Normalize)',
+        command=lambda: app.toggle_normalize() if hasattr(app, 'toggle_normalize') else None, progress_color=BLUE, text_color=TEXT)
+    app.normalize_switch.pack(anchor='w', padx=20, pady=(0, 14))
+    if getattr(app, 'normalize', False):
+        app.normalize_switch.select()
+
     device_actions = ctk.CTkFrame(devices, fg_color='transparent')
-    device_actions.pack(fill='x', padx=20, pady=(8, 16))
+    device_actions.pack(fill='x', padx=20, pady=(4, 16))
     app.test_btn = button(device_actions, 'Kiểm tra âm thanh · 8 giây', app.test_audio, primary=True, width=240)
     app.test_btn.pack(side='left')
     button(device_actions, 'Làm mới thiết bị', app.reload_devices).pack(side='right')
-    label(devices, 'Nói vào micro và phát một âm thanh để thử cả hai nguồn. App sẽ thu rồi mở bản nghe thử.',
-          12, MUTED, wraplength=650, justify='left').pack(anchor='w', padx=20, pady=(0, 18))
 
     files = card(settings)
-    label(files, 'Lưu trữ', 18, bold=True).pack(anchor='w', padx=20, pady=(16, 8))
+    label(files, 'Lưu trữ & Sao lưu', 18, bold=True).pack(anchor='w', padx=20, pady=(16, 8))
     app.format_menu = ctk.CTkSegmentedButton(files, values=['MP3', 'WAV'], command=app.change_format,
         selected_color=BLUE, selected_hover_color='#0064D4', unselected_color=LINE,
         unselected_hover_color=('#D1D1D6', '#48484A'), text_color=TEXT, height=34)
@@ -145,26 +156,64 @@ def build_ui(app):
     app.folder_label = label(files, 'Lưu tại: ' + app.folder, 11, MUTED, wraplength=640, justify='left')
     app.folder_label.pack(anchor='w', padx=20, pady=4)
     row = ctk.CTkFrame(files, fg_color='transparent')
-    row.pack(fill='x', padx=16, pady=(8, 16))
+    row.pack(fill='x', padx=16, pady=(4, 12))
     button(row, 'Chọn thư mục', app.choose_folder).pack(side='left', padx=4)
     button(row, 'Mở thư mục', app.open_folder).pack(side='left', padx=4)
 
+    label(files, 'Thời gian lưu trữ (Tự động dọn dẹp bản ghi cũ):', 12, MUTED).pack(anchor='w', padx=20, pady=(6, 4))
+    app.retention_menu = ctk.CTkOptionMenu(files, values=['Vĩnh viễn', '30 ngày', '60 ngày', '90 ngày'],
+        command=lambda c: app.change_retention(c) if hasattr(app, 'change_retention') else None, height=34)
+    app.retention_menu.pack(fill='x', padx=20, pady=(0, 10))
+    ret_val = f'{app.retention_days} ngày' if getattr(app, 'retention_days', 0) in (30, 60, 90) else 'Vĩnh viễn'
+    app.retention_menu.set(ret_val)
+
+    label(files, 'Sao lưu phụ tự động (Google Drive / OneDrive / USB):', 12, MUTED).pack(anchor='w', padx=20, pady=(6, 4))
+    app.backup_label = label(files, ('Sao lưu sang: ' + app.backup_folder) if getattr(app, 'backup_folder', '') else 'Chưa chọn thư mục sao lưu phụ', 11, MUTED, wraplength=640)
+    app.backup_label.pack(anchor='w', padx=20, pady=2)
+    backup_row = ctk.CTkFrame(files, fg_color='transparent')
+    backup_row.pack(fill='x', padx=16, pady=(4, 16))
+    button(backup_row, 'Chọn thư mục sao lưu', lambda: app.choose_backup_folder() if hasattr(app, 'choose_backup_folder') else None).pack(side='left', padx=4)
+    button(backup_row, 'Bỏ sao lưu phụ', lambda: app.clear_backup_folder() if hasattr(app, 'clear_backup_folder') else None).pack(side='left', padx=4)
+
     background = card(settings)
-    label(background, 'Theo dõi & chạy nền', 18, bold=True).pack(anchor='w', padx=20, pady=(16, 10))
+    label(background, 'Theo dõi & Tiện ích', 18, bold=True).pack(anchor='w', padx=20, pady=(16, 10))
     app.detector_switch = ctk.CTkSwitch(background, text='Nhận diện cửa sổ gọi chuyên biệt',
         command=app.toggle_new_windows, progress_color=BLUE, text_color=TEXT)
     app.detector_switch.pack(anchor='w', padx=20, pady=8)
     if app.detector.allow_new_windows:
         app.detector_switch.select()
-    label(background, 'Không dùng cửa sổ hồ sơ, ảnh hoặc chat để suy đoán cuộc gọi.', 11, MUTED,
-          wraplength=650).pack(anchor='w', padx=20)
+
+    app.hotkey_switch = ctk.CTkSwitch(background, text='Phím tắt toàn hệ thống: Ctrl + Shift + R (Bắt đầu / Dừng)',
+        command=lambda: app.toggle_hotkey() if hasattr(app, 'toggle_hotkey') else None, progress_color=BLUE, text_color=TEXT)
+    app.hotkey_switch.pack(anchor='w', padx=20, pady=8)
+    if getattr(app, 'enable_hotkey', True):
+        app.hotkey_switch.select()
+
+    app.mini_switch = ctk.CTkSwitch(background, text='Hiện thanh điều khiển Mini nổi khi ghi âm',
+        command=lambda: app.toggle_floating() if hasattr(app, 'toggle_floating') else None, progress_color=BLUE, text_color=TEXT)
+    app.mini_switch.pack(anchor='w', padx=20, pady=8)
+    if getattr(app, 'floating_widget', True):
+        app.mini_switch.select()
+
     app.autostart_switch = ctk.CTkSwitch(background, text='Mở cùng Windows', command=app.toggle_autostart,
         progress_color=BLUE, text_color=TEXT)
-    app.autostart_switch.pack(anchor='w', padx=20, pady=12)
+    app.autostart_switch.pack(anchor='w', padx=20, pady=8)
     if autostart_enabled():
         app.autostart_switch.select()
-    label(background, 'Nút X thu xuống khay. Chọn Thoát ứng dụng để dừng chạy nền.', 11, MUTED,
-          wraplength=650).pack(anchor='w', padx=20, pady=(0, 14))
+
+    ai_card = card(settings)
+    label(ai_card, 'Trợ lý AI bóc băng (Google Gemini)', 18, bold=True).pack(anchor='w', padx=20, pady=(16, 4))
+    label(ai_card, 'Dùng để bóc băng và tóm tắt cuộc họp trong Thư viện bản ghi.', 12, MUTED).pack(anchor='w', padx=20, pady=(0, 8))
+    app.gemini_key_entry = ctk.CTkEntry(ai_card, placeholder_text='Dán Gemini API Key (miễn phí tại aistudio.google.com)…',
+        height=36, show='•')
+    app.gemini_key_entry.pack(fill='x', padx=20, pady=(0, 8))
+    if getattr(app, 'gemini_api_key', ''):
+        app.gemini_key_entry.insert(0, app.gemini_api_key)
+    ai_btn_row = ctk.CTkFrame(ai_card, fg_color='transparent')
+    ai_btn_row.pack(fill='x', padx=16, pady=(4, 16))
+    button(ai_btn_row, 'Lưu API Key', lambda: app.save_gemini_key() if hasattr(app, 'save_gemini_key') else None, primary=True).pack(side='left', padx=4)
+    button(ai_btn_row, 'Xóa Key', lambda: app.clear_gemini_key() if hasattr(app, 'clear_gemini_key') else None).pack(side='left', padx=4)
+
     support = card(settings)
     row = ctk.CTkFrame(support, fg_color='transparent')
     row.pack(padx=16, pady=16, fill='x')
@@ -177,5 +226,5 @@ def build_ui(app):
                                  font=('Segoe UI', 12), state='disabled', wrap='word')
     app.log_view.pack(fill='both', expand=True, padx=12, pady=(0, 12))
     button(activity, 'Xuất nhật ký hỗ trợ', app.export_logs).pack(anchor='e', padx=12, pady=(0, 12))
-    label(app, 'Ghi Âm Zalo PC  •  2.7.0  •  Lưu trên máy của bạn', 10, MUTED).pack(pady=(0, 10))
+    label(app, 'Ghi Âm Zalo PC  •  2.8.0  •  Lưu trên máy của bạn', 10, MUTED).pack(pady=(0, 10))
     app.log('Đã mở Ghi Âm Zalo PC. Chế độ: ' + ('TỰ GHI' if app.auto_record else 'HỎI TRƯỚC KHI GHI'))

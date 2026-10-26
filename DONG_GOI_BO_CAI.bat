@@ -5,7 +5,7 @@ py -3 -m pip install -r requirements-lock.txt
 if errorlevel 1 goto fail
 py -3 packaging\build_release.py
 if errorlevel 1 goto fail
-echo Release created in release\Ghi-Am-Zalo-PC-2.7.0
+echo Release created in release\Ghi-Am-Zalo-PC-2.8.0
 pause
 exit /b 0
 :fail

@@ -11,6 +11,7 @@ class AudioPlayer:
         self.path = None
         self.length = 0
         self.volume = 80
+        self.speed = 1.0
         self.command = command or self._native_command
 
     @staticmethod
@@ -43,6 +44,7 @@ class AudioPlayer:
             self.command(f'set {self.alias} time format milliseconds')
             self.length = int(self.command(f'status {self.alias} length'))
             self.set_volume(self.volume)
+            self.set_speed(self.speed)
         except Exception:
             self.close()
             raise
@@ -77,6 +79,15 @@ class AudioPlayer:
         if self.path:
             self.command(f'setaudio {self.alias} volume to {value * 10}')
         self.volume = value
+
+    def set_speed(self, factor):
+        value = max(0.5, min(2.0, float(factor)))
+        self.speed = value
+        if self.path:
+            try:
+                self.command(f'set {self.alias} speed {int(round(value * 1000))}')
+            except Exception:
+                pass
 
     def skip(self, seconds):
         if self.path:
