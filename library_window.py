@@ -9,8 +9,137 @@ from recording_library import (
     list_recordings, recovery_candidates, rename_recording, matches_date,
     session_description, filter_records, read_json, atomic_json,
     update_record_metadata, filter_date_range, export_recordings_csv,
-    add_timestamp_mark, remove_timestamp_mark, transcribe_with_gemini
+    add_timestamp_mark, remove_timestamp_mark, transcribe_with_gemini,
+    trim_audio
 )
+from desktop_support import play_audio_cue
+from audio_engine import track_duration
+import tkinter as tk
+
+
+class WaveformCanvas(tk.Canvas):
+    def __init__(self, parent, on_seek=None, **kwargs):
+        super().__init__(parent, highlightthickness=0, **kwargs)
+        self.on_seek = on_seek
+        self.peaks = []
+        self.progress = 0.0
+        self.marks = []
+        self.bind('<Configure>', lambda _: self.redraw())
+        self.bind('<Button-1>', self._on_click)
+        self.bind('<B1-Motion>', self._on_click)
+
+    def set_audio(self, duration_sec, marks=None):
+        import random
+        seed = int(float(duration_sec or 1.0) * 10)
+        rng = random.Random(seed)
+        self.peaks = [0.2 + 0.75 * rng.random() for _ in range(72)]
+        self.marks = marks or []
+        self.redraw()
+
+    def set_progress(self, progress):
+        self.progress = max(0.0, min(1.0, float(progress)))
+        self.redraw()
+
+    def _on_click(self, event):
+        width = self.winfo_width()
+        if width > 0 and self.on_seek:
+            frac = max(0.0, min(1.0, event.x / width))
+            self.on_seek(frac)
+
+    def redraw(self):
+        self.delete('all')
+        w = self.winfo_width()
+        h = self.winfo_height()
+        if w <= 1 or h <= 1:
+            return
+        dark = ctk.get_appearance_mode() == 'Dark'
+        bg_color = '#18181A' if dark else '#EAEAEF'
+        self.configure(bg=bg_color)
+        bar_count = len(self.peaks) if self.peaks else 60
+        gap = 2
+        bar_w = max(2, (w - (bar_count - 1) * gap) / bar_count)
+        current_idx = int(self.progress * bar_count)
+        for i in range(bar_count):
+            val = self.peaks[i] if self.peaks else 0.4
+            bar_h = max(4, val * (h - 6))
+            x0 = i * (bar_w + gap)
+            x1 = x0 + bar_w
+            y0 = (h - bar_h) / 2
+            y1 = y0 + bar_h
+            color = '#007AFF' if i <= current_idx else ('#48484A' if dark else '#B0B0B8')
+            self.create_rectangle(x0, y0, x1, y1, fill=color, outline='')
+        for m in self.marks:
+            mx = m * w
+            self.create_polygon(mx - 4, 0, mx + 4, 0, mx, 6, fill='#FF9500', outline='')
+            self.create_line(mx, 6, mx, h, fill='#FF9500', width=1, dash=(2, 2))
+
+
+class TrimDialog(ManagedToplevel):
+    def __init__(self, parent, path, current_pos_sec, duration_sec, on_success):
+        super().__init__(parent)
+        self.title('Cắt gọt bản ghi âm')
+        self.geometry('500x380')
+        self.resizable(False, False)
+        self.transient(parent)
+        self.path = Path(path)
+        self.duration = float(duration_sec or 0.0)
+        self.on_success = on_success
+
+        body = ctk.CTkFrame(self, corner_radius=16)
+        body.pack(fill='both', expand=True, padx=16, pady=16)
+
+        ctk.CTkLabel(body, text='✂ Cắt gọt âm thanh', font=('Segoe UI', 16, 'bold')).pack(pady=(12, 4))
+        ctk.CTkLabel(body, text=self.path.name, font=('Segoe UI', 12), text_color='#8E8E93', wraplength=440).pack(pady=(0, 10))
+
+        dur_text = f"{int(self.duration//60):02d}:{int(self.duration%60):02d}"
+        ctk.CTkLabel(body, text=f'Tổng thời lượng: {dur_text} ({self.duration:.1f} giây)', font=('Segoe UI', 12, 'bold')).pack(pady=(0, 10))
+
+        row1 = ctk.CTkFrame(body, fg_color='transparent')
+        row1.pack(fill='x', padx=20, pady=4)
+        ctk.CTkLabel(row1, text='Bắt đầu (giây):', width=110, anchor='w').pack(side='left')
+        self.start_entry = ctk.CTkEntry(row1, width=120)
+        self.start_entry.insert(0, '0.0')
+        self.start_entry.pack(side='left', padx=4)
+        ctk.CTkButton(row1, text='Lấy vị trí hiện tại', width=130, height=28,
+                      command=lambda: self._set_field(self.start_entry, current_pos_sec)).pack(side='left', padx=6)
+
+        row2 = ctk.CTkFrame(body, fg_color='transparent')
+        row2.pack(fill='x', padx=20, pady=4)
+        ctk.CTkLabel(row2, text='Kết thúc (giây):', width=110, anchor='w').pack(side='left')
+        self.end_entry = ctk.CTkEntry(row2, width=120)
+        self.end_entry.insert(0, f'{self.duration:.1f}')
+        self.end_entry.pack(side='left', padx=4)
+        ctk.CTkButton(row2, text='Lấy vị trí hiện tại', width=130, height=28,
+                      command=lambda: self._set_field(self.end_entry, current_pos_sec)).pack(side='left', padx=6)
+
+        self.status_lbl = ctk.CTkLabel(body, text='', font=('Segoe UI', 11), text_color='#FF9500')
+        self.status_lbl.pack(pady=8)
+
+        btn_row = ctk.CTkFrame(body, fg_color='transparent')
+        btn_row.pack(pady=(4, 12))
+        ctk.CTkButton(btn_row, text='Hủy', width=100, command=self.destroy, fg_color='#48484A').pack(side='left', padx=6)
+        ctk.CTkButton(btn_row, text='Cắt & Lưu file mới', width=160, command=self._do_trim, fg_color='#007AFF').pack(side='left', padx=6)
+
+    def _set_field(self, entry, val):
+        entry.delete(0, 'end')
+        entry.insert(0, f'{float(val):.1f}')
+
+    def _do_trim(self):
+        try:
+            s = float(self.start_entry.get().strip())
+            e = float(self.end_entry.get().strip())
+            if s >= e:
+                self.status_lbl.configure(text='Giây bắt đầu phải nhỏ hơn giây kết thúc!')
+                return
+            self.status_lbl.configure(text='Đang cắt âm thanh...')
+            self.update_idletasks()
+            out = trim_audio(self.path, s, e)
+            self.status_lbl.configure(text='Đã cắt thành công!')
+            if self.on_success:
+                self.on_success(out)
+            self.after(500, self.destroy)
+        except Exception as ex:
+            self.status_lbl.configure(text='Lỗi: ' + str(ex))
 
 
 class LibraryWindow(ManagedToplevel):
@@ -93,14 +222,16 @@ class LibraryWindow(ManagedToplevel):
         player.grid(row=1, column=0, columnspan=2, sticky='ew', pady=(10, 0))
         player.grid_columnconfigure(1, weight=1)
         self.play_button = ctk.CTkButton(player, text='Phát', width=95, command=self.play)
-        self.play_button.grid(row=0, column=0, padx=8, pady=8)
+        self.play_button.grid(row=0, column=0, rowspan=2, padx=8, pady=8)
+        self.waveform = WaveformCanvas(player, height=28, on_seek=self._seek_from_waveform)
+        self.waveform.grid(row=0, column=1, sticky='ew', padx=8, pady=(6, 0))
         self.seek_bar = ctk.CTkSlider(player, from_=0, to=1, command=self._seek)
         self.seek_bar.bind('<ButtonPress-1>', lambda _: setattr(self, '_dragging_seek', True), add=True)
         self.seek_bar.bind('<ButtonRelease-1>', lambda _: setattr(self, '_dragging_seek', False), add=True)
         self.seek_bar.set(0)
-        self.seek_bar.grid(row=0, column=1, sticky='ew', padx=8)
+        self.seek_bar.grid(row=1, column=1, sticky='ew', padx=8, pady=(0, 4))
         self.play_time = ctk.CTkLabel(player, text='00:00 / 00:00', width=115)
-        self.play_time.grid(row=0, column=2, padx=8)
+        self.play_time.grid(row=0, column=2, rowspan=2, padx=8)
         self.play_hint = ctk.CTkLabel(player, text='Chọn một bản ghi để nghe ngay', anchor='w')
         self.play_hint.configure(wraplength=720, font=('Segoe UI', 12))
         self.play_hint.grid(row=1, column=0, columnspan=3, sticky='ew', padx=12, pady=(0, 6))
@@ -124,11 +255,15 @@ class LibraryWindow(ManagedToplevel):
 
         buttons = ctk.CTkFrame(saved, fg_color='transparent')
         buttons.grid(row=2, column=0, columnspan=2, sticky='ew', pady=10)
-        for label, command in [('Dừng nghe', self.stop_playback), ('Đổi tên', self.rename),
-                               ('Chi tiết / Ghi chú', self.show_details), ('★ Quan trọng', self.toggle_favorite),
-                               ('+ Đánh dấu mốc', self.add_bookmark), ('Bóc băng AI', self.ai_transcribe),
-                               ('Làm mới', self.refresh)]:
-            ctk.CTkButton(buttons, text=label, width=110, height=36, corner_radius=12,
+        btn_items = [
+            ('Dừng nghe', self.stop_playback), ('Đổi tên', self.rename),
+            ('Chi tiết', self.show_details), ('★ Quan trọng', self.toggle_favorite),
+            ('+ Đánh dấu mốc', self.add_bookmark), ('✂ Cắt đoạn', self.open_trim_dialog),
+            ('Bóc băng AI', self.ai_transcribe), ('Tóm tắt AI', self.ai_summary),
+            ('Làm mới', self.refresh)
+        ]
+        for label, command in btn_items:
+            ctk.CTkButton(buttons, text=label, width=96, height=36, corner_radius=12,
                           fg_color=('#E8F2FF', '#172C46'), hover_color=('#D7E8FC', '#203C5C'),
                           text_color=('#0066CC', '#64ADFF'), command=command).pack(side='left', padx=3)
 
@@ -153,6 +288,52 @@ class LibraryWindow(ManagedToplevel):
         except Exception:
             pass
 
+    def _seek_from_waveform(self, frac):
+        if self.player.path and self.player.length > 0:
+            target_ms = int(frac * self.player.length)
+            self.player.seek(target_ms)
+            self.seek_bar.set(target_ms)
+            self.waveform.set_progress(frac)
+
+    def open_trim_dialog(self):
+        path = self.selected()
+        if not path:
+            messagebox.showinfo('Cắt đoạn âm thanh', 'Hãy chọn một bản ghi trước.', parent=self)
+            return
+        _, pos_ms = self.player.status()
+        dur = self.player.length / 1000.0 if self.player.path == path else track_duration(path)
+        TrimDialog(self, path, pos_ms / 1000.0, dur, on_success=lambda out: (self.refresh(), self.select_path(out)))
+
+    def ai_summary(self):
+        path = self.selected()
+        if not path:
+            messagebox.showinfo('Tóm tắt AI', 'Hãy chọn một bản ghi trước.', parent=self)
+            return
+        key = getattr(self.owner, 'gemini_api_key', '') or getattr(self.owner, 'settings', {}).get('gemini_api_key', '').strip()
+        if not key:
+            key_dialog = ctk.CTkInputDialog(text='Nhập Google Gemini API Key của bạn (miễn phí tại aistudio.google.com):', title='Nhập Gemini API Key')
+            input_key = key_dialog.get_input()
+            if not input_key:
+                return
+            key = input_key.strip()
+            if self.owner:
+                self.owner.gemini_api_key = key
+                self.owner.settings['gemini_api_key'] = key
+                self.owner.persist()
+        self.play_hint.configure(text='Đang gửi audio đến Gemini 3.1 Flash-Lite để tóm tắt & lập việc cần làm... Vui lòng đợi.')
+        def run_ai():
+            try:
+                res = transcribe_with_gemini(key, path, model='gemini-3.1-flash-lite', task='summary')
+                self.after(0, lambda: self._on_summary_done(path, res))
+            except Exception as ex:
+                self.after(0, lambda: (self.play_hint.configure(text='Tóm tắt gặp lỗi.'), messagebox.showerror('Lỗi tóm tắt AI', str(ex), parent=self)))
+        threading.Thread(target=run_ai, daemon=True).start()
+
+    def _on_summary_done(self, path, result):
+        self.refresh(False)
+        self.play_hint.configure(text='Đã tóm tắt AI thành công!')
+        self.show_details()
+
     def add_bookmark(self):
         path = self.selected()
         if not path:
@@ -165,6 +346,7 @@ class LibraryWindow(ManagedToplevel):
         if label is not None:
             try:
                 add_timestamp_mark(path, pos_sec, label)
+                play_audio_cue('mark')
                 self.refresh(False)
                 messagebox.showinfo('Đã thêm mốc', f'Đã thêm mốc {int(pos_sec//60):02d}:{int(pos_sec%60):02d} - {label}', parent=self)
             except Exception as ex:
@@ -175,7 +357,7 @@ class LibraryWindow(ManagedToplevel):
         if not path:
             messagebox.showinfo('Bóc băng AI', 'Hãy chọn một bản ghi trước.', parent=self)
             return
-        key = getattr(self.owner, 'settings', {}).get('gemini_api_key', '').strip()
+        key = getattr(self.owner, 'gemini_api_key', '') or getattr(self.owner, 'settings', {}).get('gemini_api_key', '').strip()
         if not key:
             key_dialog = ctk.CTkInputDialog(text='Nhập Google Gemini API Key của bạn (miễn phí tại aistudio.google.com):', title='Nhập Gemini API Key')
             input_key = key_dialog.get_input()
@@ -187,7 +369,7 @@ class LibraryWindow(ManagedToplevel):
         self.play_hint.configure(text='Đang gửi audio đến Gemini AI để bóc băng và tóm tắt... Vui lòng đợi trong giây lát.')
         def run_ai():
             try:
-                res = transcribe_with_gemini(key, path)
+                res = transcribe_with_gemini(key, path, model='gemini-3.1-flash-lite', task='transcribe')
                 self.after(0, lambda: self._on_transcribe_done(path, res))
             except Exception as ex:
                 self.after(0, lambda: (self.play_hint.configure(text='Bóc băng gặp lỗi.'), messagebox.showerror('Lỗi bóc băng AI', str(ex), parent=self)))
@@ -261,6 +443,13 @@ class LibraryWindow(ManagedToplevel):
         path = self.selected()
         if path:
             self.play_hint.configure(text=path.name)
+            try:
+                dur = track_duration(path) or 1.0
+                data = read_json(path.with_suffix(path.suffix + '.json'))
+                ts_marks = [ts.get('time', 0) / max(0.1, dur) for ts in data.get('timestamps', [])]
+                self.waveform.set_audio(dur, ts_marks)
+            except Exception:
+                pass
 
     def selected(self):
         selection = self.tree.selection()
@@ -318,6 +507,9 @@ class LibraryWindow(ManagedToplevel):
                 if 0 < position < self.player.length - 1500:
                     self.player.seek(position)
                 self.seek_bar.configure(to=max(1, self.player.length))
+                dur_sec = max(1.0, self.player.length / 1000.0)
+                ts_marks = [ts.get('time', 0) / dur_sec for ts in data.get('timestamps', [])]
+                self.waveform.set_audio(dur_sec, ts_marks)
             self.player.toggle()
             self._remember_playback()
             self.play_hint.configure(text=path.name)
@@ -355,6 +547,14 @@ class LibraryWindow(ManagedToplevel):
             text.pack(fill='x', padx=24, pady=(0, 8))
             text.insert('1.0', session_description(path))
             text.configure(state='disabled')
+
+            summary = metadata.get('summary')
+            if summary:
+                ctk.CTkLabel(dialog, text='📌 Tóm tắt & Việc cần làm (Gemini 3.1):', font=('Segoe UI', 13, 'bold'), text_color='#30D158').pack(anchor='w', padx=24, pady=(4, 2))
+                sum_box = ctk.CTkTextbox(dialog, height=140, wrap='word', font=('Segoe UI', 12))
+                sum_box.pack(fill='both', expand=True, padx=24, pady=(0, 8))
+                sum_box.insert('1.0', summary)
+                sum_box.configure(state='disabled')
 
             transcription = metadata.get('transcription')
             if transcription:
@@ -446,6 +646,8 @@ class LibraryWindow(ManagedToplevel):
             self.play_button.configure(text='Tạm dừng' if mode == 'playing' else 'Phát')
             if not self._dragging_seek:
                 self.seek_bar.set(position)
+            if self.player.length > 0:
+                self.waveform.set_progress(position / float(self.player.length))
             def stamp(ms):
                 seconds = ms // 1000
                 return f'{seconds // 60:02d}:{seconds % 60:02d}'

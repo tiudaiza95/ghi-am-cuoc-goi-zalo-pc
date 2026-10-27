@@ -28,7 +28,7 @@ from recording_names import caller_from_title
 from recording_library import atomic_json, recovery_candidates, read_json, cleanup_old_recordings
 from library_window import LibraryWindow
 from ui_effects import ManagedToplevel, cancel_root_callbacks, MiniOverlay
-from desktop_support import SingleInstance, setup_logger, create_tray, set_autostart, autostart_enabled, update_tray_state, GlobalHotkeyListener
+from desktop_support import SingleInstance, setup_logger, create_tray, set_autostart, autostart_enabled, update_tray_state, GlobalHotkeyListener, play_audio_cue
 import logging
 from app_paths import app_root, resolve_recording_folder, stored_recording_folder
 
@@ -39,7 +39,8 @@ from zalo_detector import (
 )
 
 APP = 'Ghi Âm Zalo PC'
-VERSION = '2.8.0 • Windows'
+VERSION = '2.9.0 • Windows'
+DEFAULT_GEMINI_KEY = 'AIzaSyC5m9k5qxcDVayQRL8Hp7O305ZjaV9rfk0'
 BG = ('#F2F2F7', '#111114')
 SURFACE = ('#FFFFFF', '#1C1C1E')
 SURFACE_2 = ('#E5E5EA', '#38383A')
@@ -205,7 +206,9 @@ class Companion(ctk.CTk):
         self.backup_folder = str(self.settings.get('backup_folder', ''))
         self.enable_hotkey = bool(self.settings.get('enable_hotkey', True))
         self.floating_widget = bool(self.settings.get('floating_widget', True))
-        self.gemini_api_key = str(self.settings.get('gemini_api_key', ''))
+        self.denoise = bool(self.settings.get('denoise', True))
+        self.enable_audio_cues = bool(self.settings.get('enable_audio_cues', True))
+        self.gemini_api_key = str(self.settings.get('gemini_api_key', '') or DEFAULT_GEMINI_KEY)
 
         self.hotkey_listener = None
         if self.enable_hotkey:
@@ -378,6 +381,18 @@ class Companion(ctk.CTk):
             self.log('Phím tắt Ctrl+Shift+R: TẮT')
         self.persist()
 
+    def toggle_denoise(self):
+        if hasattr(self, 'denoise_switch'):
+            self.denoise = bool(self.denoise_switch.get())
+        self.persist()
+        self.log('Khử tiếng ồn (Noise Suppression): ' + ('BẬT' if self.denoise else 'TẮT'))
+
+    def toggle_audio_cues(self):
+        if hasattr(self, 'cue_switch'):
+            self.enable_audio_cues = bool(self.cue_switch.get())
+        self.persist()
+        self.log('Âm thanh báo hiệu (Audio Cues): ' + ('BẬT' if self.enable_audio_cues else 'TẮT'))
+
     def toggle_floating(self):
         self.floating_widget = bool(self.mini_switch.get())
         self.persist()
@@ -457,6 +472,8 @@ class Companion(ctk.CTk):
                 'backup_folder': getattr(self, 'backup_folder', ''),
                 'enable_hotkey': getattr(self, 'enable_hotkey', True) is True,
                 'floating_widget': getattr(self, 'floating_widget', True) is True,
+                'denoise': getattr(self, 'denoise', True) is True,
+                'enable_audio_cues': getattr(self, 'enable_audio_cues', True) is True,
                 'gemini_api_key': getattr(self, 'gemini_api_key', '')}
         self.settings = data
         try:
@@ -654,10 +671,13 @@ class Companion(ctk.CTk):
             folder = app_root() / 'Data' / 'AudioChecks' if testing else Path(self.folder)
             channel_mode = 'mixed' if testing else getattr(self, 'channel_mode', 'mixed')
             normalize = getattr(self, 'normalize', False)
+            denoise = getattr(self, 'denoise', True)
             if not self.recorder.start(mic, speaker, folder, self.format_menu.get(), self.current_caller_name,
-                                      channel_mode=channel_mode, normalize=normalize):
+                                      channel_mode=channel_mode, normalize=normalize, denoise=denoise):
                 self.current_call_key = None
                 return
+            if getattr(self, 'enable_audio_cues', True):
+                play_audio_cue('start')
             if getattr(self, 'floating_widget', True) and not testing:
                 try:
                     if self.mini_overlay and self.mini_overlay.winfo_exists():
@@ -722,6 +742,8 @@ class Companion(ctk.CTk):
             while True:
                 kind, message = self.events.get_nowait()
                 if kind == 'saved':
+                    if getattr(self, 'enable_audio_cues', True):
+                        play_audio_cue('stop')
                     self._tray_error = bool(read_json(Path(message).with_suffix(Path(message).suffix + '.json')).get('warnings'))
                     self._restore_controls()
                     self.current_file_label.configure(text='Đã lưu: ' + Path(message).name)

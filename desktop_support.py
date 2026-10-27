@@ -154,3 +154,20 @@ class GlobalHotkeyListener(threading.Thread):
 
     def stop(self):
         self._stop.set()
+
+
+def play_audio_cue(cue_type='start'):
+    def _run():
+        try:
+            import winsound
+            if cue_type == 'start':
+                winsound.Beep(988, 80)
+                winsound.Beep(1318, 120)
+            elif cue_type == 'stop':
+                winsound.Beep(1175, 80)
+                winsound.Beep(659, 140)
+            elif cue_type == 'mark':
+                winsound.Beep(1568, 70)
+        except Exception:
+            pass
+    threading.Thread(target=_run, daemon=True).start()

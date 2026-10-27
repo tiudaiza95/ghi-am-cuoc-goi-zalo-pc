@@ -1,4 +1,4 @@
-#define AppVersion "2.8.0"
+#define AppVersion "2.9.0"
 [Setup]
 AppId={{20AA6AF9-727D-445F-BB49-852A942694B1}
 AppName=Ghi Âm Zalo PC
@@ -13,8 +13,8 @@ MinVersion=10.0
 WizardStyle=modern
 SetupIconFile=..\assets\companion.ico
 UninstallDisplayIcon={app}\ZaloCallCompanion.exe
-OutputDir=..\release\Ghi-Am-Zalo-PC-2.8.0
-OutputBaseFilename=Ghi-Am-Zalo-PC-2.8.0-Setup
+OutputDir=..\release\Ghi-Am-Zalo-PC-2.9.0
+OutputBaseFilename=Ghi-Am-Zalo-PC-2.9.0-Setup
 Compression=lzma2
 SolidCompression=yes
 AppMutex=Local\ZaloCallCompanion.Instance

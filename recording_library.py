@@ -7,6 +7,7 @@ import re
 import wave
 
 import psutil
+import subprocess
 
 
 def read_json(path):
@@ -290,7 +291,43 @@ def remove_timestamp_mark(path, index):
     return data
 
 
-def transcribe_with_gemini(api_key, path):
+def trim_audio(source_path, start_seconds, end_seconds, destination_path=None):
+    from audio_engine import find_ffmpeg
+    ffmpeg = find_ffmpeg()
+    if not ffmpeg:
+        raise RuntimeError('Không tìm thấy FFmpeg.')
+    source = Path(source_path)
+    if not source.is_file():
+        raise FileNotFoundError(f'Không tìm thấy file: {source_path}')
+    start_seconds = max(0.0, float(start_seconds))
+    end_seconds = float(end_seconds)
+    if end_seconds <= start_seconds:
+        raise ValueError('Thời gian kết thúc phải lớn hơn thời gian bắt đầu.')
+    if destination_path is None:
+        start_str = f'{int(start_seconds)}s'
+        end_str = f'{int(end_seconds)}s'
+        destination_path = source.with_name(f'{source.stem}_cut_{start_str}_{end_str}{source.suffix}')
+    else:
+        destination_path = Path(destination_path)
+    cmd = [
+        ffmpeg, '-hide_banner', '-loglevel', 'error', '-nostdin', '-y',
+        '-ss', str(start_seconds),
+        '-to', str(end_seconds),
+        '-i', str(source)
+    ]
+    if source.suffix.lower() == '.mp3':
+        cmd += ['-c:a', 'libmp3lame', '-b:a', '192k']
+    else:
+        cmd += ['-c:a', 'pcm_s16le']
+    cmd.append(str(destination_path))
+    proc = subprocess.run(cmd, capture_output=True, text=True,
+                          creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
+    if proc.returncode != 0 or not destination_path.is_file():
+        raise RuntimeError('Lỗi cắt âm thanh: ' + proc.stderr[-500:])
+    return destination_path
+
+
+def transcribe_with_gemini(api_key, path, model='gemini-3.1-flash-lite', task='transcribe'):
     import base64
     import urllib.request
     import urllib.error
@@ -305,27 +342,42 @@ def transcribe_with_gemini(api_key, path):
     raw_bytes = path.read_bytes()
     b64 = base64.b64encode(raw_bytes).decode('ascii')
     mime = 'audio/mp3' if path.suffix.lower() == '.mp3' else 'audio/wav'
+    if task == 'summary':
+        prompt = (
+            'Bạn là thư ký chuyên nghiệp. Hãy nghe bản ghi âm cuộc gọi này và thực hiện tóm tắt chi tiết bằng tiếng Việt theo định dạng sau:\n\n'
+            '📌 TÓM TẮT NỘI DUNG CUỘC GỌI:\n'
+            '- (3-5 gạch đầu dòng tóm tắt các vấn đề cốt lõi được thảo luận)\n\n'
+            '✅ DANH SÁCH VIỆC CẦN LÀM (ACTION ITEMS):\n'
+            '- (Các cam kết, nhiệm vụ, thời hạn, mốc hẹn gặp hoặc thanh toán nếu có)\n\n'
+            '💡 ĐÁNH GIÁ THÁI ĐỘ / CẢM XÚC:\n'
+            '- (Tích cực / Hợp tác / Bình thường / Căng thẳng kèm lý do ngắn gọn)'
+        )
+    else:
+        prompt = (
+            'Bạn là thư ký chuyên nghiệp. Hãy nghe bản ghi âm cuộc gọi này và bóc băng chi tiết toàn bộ nội dung hội thoại bằng tiếng Việt:\n'
+            '- Ghi rõ vai người nói nếu phân biệt được (Người gọi / Người nhận hoặc Tên).\n'
+            '- Kèm mốc thời gian nếu có.\n'
+            'Trình bày rõ ràng, sạch sẽ, chuẩn xác.'
+        )
     payload = {
         'contents': [{
             'parts': [
-                {'text': (
-                    "Bạn là thư ký chuyên nghiệp. Hãy nghe bản ghi âm cuộc gọi này và thực hiện 2 việc bằng tiếng Việt:\n"
-                    "1. Bóc băng nội dung hội thoại chi tiết (kèm tên người nói nếu phân biệt được).\n"
-                    "2. Tóm tắt ngắn gọn các điểm chính và danh sách việc cần làm (Action Items).\n"
-                    "Trình bày rõ ràng, dễ đọc."
-                )},
+                {'text': prompt},
                 {'inline_data': {'mime_type': mime, 'data': b64}}
             ]
         }]
     }
     req_data = json.dumps(payload).encode('utf-8')
-    url = f'https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={api_key}'
+    url = f'https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}'
     req = urllib.request.Request(url, data=req_data, headers={'Content-Type': 'application/json'}, method='POST')
     try:
         with urllib.request.urlopen(req, timeout=90) as resp:
             body = json.loads(resp.read().decode('utf-8'))
             text = body['candidates'][0]['content']['parts'][0]['text']
-            update_record_metadata(path, transcription=text)
+            if task == 'summary':
+                update_record_metadata(path, summary=text)
+            else:
+                update_record_metadata(path, transcription=text)
             return text
     except urllib.error.HTTPError as ex:
         err_msg = ex.read().decode('utf-8', errors='ignore')

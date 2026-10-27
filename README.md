@@ -1,10 +1,10 @@
-# Ghi Âm Zalo PC 2.8.0
+# Ghi Âm Zalo PC 2.9.0
 
-Ứng dụng Windows ghi âm cuộc gọi Zalo chuyên nghiệp từ micro và âm thanh thiết bị phát. Hỗ trợ giao diện Sáng/Tối, tự ghi hoặc hỏi trước, chạy khay hệ thống, widget nổi thu nhỏ, phím tắt toàn cục Ctrl+Shift+R, ghi âm tách 2 kênh (Mic/Loa), cân bằng âm lượng tự động, nghe lại tùy chỉnh tốc độ, đánh dấu mốc thời gian, tự dọn dẹp bản ghi cũ, sao lưu thư mục thứ hai/đám mây và bóc băng tự động bằng Gemini AI.
+Ứng dụng Windows ghi âm cuộc gọi Zalo chuyên nghiệp từ micro và âm thanh thiết bị phát. Tích hợp AI Gemini 3.1 Flash-Lite để bóc băng và tóm tắt cuộc gọi / việc cần làm, công cụ cắt gọt âm thanh trực tiếp, bộ lọc khử ồn môi trường, biểu đồ sóng âm trực quan, âm thanh báo hiệu trạng thái, widget nổi thu nhỏ, phím tắt toàn cục Ctrl+Shift+R, ghi âm tách 2 kênh (Mic/Loa), cân bằng âm lượng tự động, nghe lại tùy chỉnh tốc độ, đánh dấu mốc thời gian, tự dọn dẹp bản ghi cũ và sao lưu thư mục thứ hai/đám mây.
 
 Đây là phần mềm độc lập, không phải sản phẩm chính thức của Zalo. Nhận diện cuộc gọi dựa trên cửa sổ, có thể bị ảnh hưởng khi Zalo cập nhật. Âm thanh phát từ ứng dụng khác trên cùng loa cũng có thể lọt vào bản ghi. Chỉ ghi khi các bên đã được thông báo và đồng ý theo yêu cầu áp dụng.
 
-Chi tiết tính năng mới và kiểm thử: **PHIEN_BAN_2.8.0.md**.
+Chi tiết tính năng mới và kiểm thử: **PHIEN_BAN_2.9.0.md**.
 
 ## Sử dụng
 

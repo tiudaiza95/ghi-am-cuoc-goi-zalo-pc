@@ -158,7 +158,7 @@ def capture_track(role, dev_index, target, stop_signal, started, faults, lock, s
             pa.terminate()
 
 
-def encode_audio(speaker_file, microphone_file, started, destination, kind, channel_mode='mixed', normalize=False):
+def encode_audio(speaker_file, microphone_file, started, destination, kind, channel_mode='mixed', normalize=False, denoise=False):
     ffmpeg = find_ffmpeg()
     if not ffmpeg:
         raise RuntimeError('Không tìm thấy FFmpeg. Chạy: winget install -e --id Gyan.FFmpeg, rồi mở lại ứng dụng.')
@@ -186,6 +186,11 @@ def encode_audio(speaker_file, microphone_file, started, destination, kind, chan
         filter_parts = ['[a0][a1]amix=inputs=2:duration=longest:dropout_transition=0:normalize=0']
     else:
         filter_parts = ['[a0]']
+    if denoise:
+        if filter_parts == ['[a0]']:
+            filter_parts = ['[a0]afftdn=nf=-25']
+        else:
+            filter_parts.append('afftdn=nf=-25')
     if normalize:
         if filter_parts == ['[a0]']:
             filter_parts = ['[a0]dynaudnorm=f=150:g=15']
@@ -241,9 +246,10 @@ class AudioSession:
         self._ended_at = None
         self._channel_mode = 'mixed'
         self._normalize = False
+        self._denoise = False
 
     def start(self, microphone: int, speaker: int, folder: Path, file_kind: str, caller_name: str = '',
-              channel_mode: str = 'mixed', normalize: bool = False):
+              channel_mode: str = 'mixed', normalize: bool = False, denoise: bool = False):
         if self.state != 'idle':
             return False
         if pyaudio is None:
@@ -265,6 +271,7 @@ class AudioSession:
         self._file_kind = file_kind
         self._channel_mode = channel_mode
         self._normalize = normalize
+        self._denoise = bool(denoise)
         self._session_date = datetime.now()
         self._ended_at = None
         filename = recording_stem(caller_name, self._session_date)
@@ -396,9 +403,9 @@ class AudioSession:
         if incomplete:
             destination = destination.with_stem(destination.stem + ' - ' + label)
         destination = unique_path(destination)
-        if getattr(self, '_channel_mode', 'mixed') != 'mixed' or getattr(self, '_normalize', False):
+        if getattr(self, '_channel_mode', 'mixed') != 'mixed' or getattr(self, '_normalize', False) or getattr(self, '_denoise', False):
             encode_audio(sources['speaker'], sources['microphone'], self._started, destination, kind,
-                         channel_mode=self._channel_mode, normalize=self._normalize)
+                         channel_mode=self._channel_mode, normalize=self._normalize, denoise=getattr(self, '_denoise', False))
         else:
             encode_audio(sources['speaker'], sources['microphone'], self._started, destination, kind)
         self.recording_file = destination
@@ -415,6 +422,7 @@ class AudioSession:
                          'source_durations': {r: track_duration(sources[r]) for r in available},
                          'channel_mode': getattr(self, '_channel_mode', 'mixed'),
                          'normalized': getattr(self, '_normalize', False),
+                         'denoised': getattr(self, '_denoise', False),
                          'warnings': list(self._faults)})
             manifest = read_json(temp / 'session.json')
             manifest.update(active=False, saved_to=str(destination), ended_at=ended_at)

@@ -136,9 +136,15 @@ def build_ui(app):
 
     app.normalize_switch = ctk.CTkSwitch(devices, text='Tự động cân bằng âm lượng (Normalize)',
         command=lambda: app.toggle_normalize() if hasattr(app, 'toggle_normalize') else None, progress_color=BLUE, text_color=TEXT)
-    app.normalize_switch.pack(anchor='w', padx=20, pady=(0, 14))
+    app.normalize_switch.pack(anchor='w', padx=20, pady=(0, 8))
     if getattr(app, 'normalize', False):
         app.normalize_switch.select()
+
+    app.denoise_switch = ctk.CTkSwitch(devices, text='Khử tiếng ồn nền & quạt gió (Noise Suppression)',
+        command=lambda: app.toggle_denoise() if hasattr(app, 'toggle_denoise') else None, progress_color=BLUE, text_color=TEXT)
+    app.denoise_switch.pack(anchor='w', padx=20, pady=(0, 14))
+    if getattr(app, 'denoise', True):
+        app.denoise_switch.select()
 
     device_actions = ctk.CTkFrame(devices, fg_color='transparent')
     device_actions.pack(fill='x', padx=20, pady=(4, 16))
@@ -195,6 +201,12 @@ def build_ui(app):
     if getattr(app, 'floating_widget', True):
         app.mini_switch.select()
 
+    app.cue_switch = ctk.CTkSwitch(background, text='Âm thanh báo hiệu (Beep khi bắt đầu / lưu cuộc gọi)',
+        command=lambda: app.toggle_audio_cues() if hasattr(app, 'toggle_audio_cues') else None, progress_color=BLUE, text_color=TEXT)
+    app.cue_switch.pack(anchor='w', padx=20, pady=8)
+    if getattr(app, 'enable_audio_cues', True):
+        app.cue_switch.select()
+
     app.autostart_switch = ctk.CTkSwitch(background, text='Mở cùng Windows', command=app.toggle_autostart,
         progress_color=BLUE, text_color=TEXT)
     app.autostart_switch.pack(anchor='w', padx=20, pady=8)
@@ -202,7 +214,7 @@ def build_ui(app):
         app.autostart_switch.select()
 
     ai_card = card(settings)
-    label(ai_card, 'Trợ lý AI bóc băng (Google Gemini)', 18, bold=True).pack(anchor='w', padx=20, pady=(16, 4))
+    label(ai_card, 'Trợ lý AI bóc băng & Tóm tắt (Gemini 3.1 Flash-Lite)', 18, bold=True).pack(anchor='w', padx=20, pady=(16, 4))
     label(ai_card, 'Dùng để bóc băng và tóm tắt cuộc họp trong Thư viện bản ghi.', 12, MUTED).pack(anchor='w', padx=20, pady=(0, 8))
     app.gemini_key_entry = ctk.CTkEntry(ai_card, placeholder_text='Dán Gemini API Key (miễn phí tại aistudio.google.com)…',
         height=36, show='•')
@@ -226,5 +238,5 @@ def build_ui(app):
                                  font=('Segoe UI', 12), state='disabled', wrap='word')
     app.log_view.pack(fill='both', expand=True, padx=12, pady=(0, 12))
     button(activity, 'Xuất nhật ký hỗ trợ', app.export_logs).pack(anchor='e', padx=12, pady=(0, 12))
-    label(app, 'Ghi Âm Zalo PC  •  2.8.0  •  Lưu trên máy của bạn', 10, MUTED).pack(pady=(0, 10))
+    label(app, 'Ghi Âm Zalo PC  •  2.9.0  •  Lưu trên máy của bạn', 10, MUTED).pack(pady=(0, 10))
     app.log('Đã mở Ghi Âm Zalo PC. Chế độ: ' + ('TỰ GHI' if app.auto_record else 'HỎI TRƯỚC KHI GHI'))

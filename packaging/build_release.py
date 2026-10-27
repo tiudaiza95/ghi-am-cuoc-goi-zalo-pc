@@ -12,7 +12,7 @@ import zipfile
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from audio_engine import find_ffmpeg
-VERSION = '2.8.0'
+VERSION = '2.9.0'
 
 
 def run(args):
@@ -66,7 +66,7 @@ def main():
     for item in (Path(sys.base_prefix) / 'tcl').glob('*/license.terms'):
         shutil.copy2(item, payload / 'licenses' / (item.parent.name + '-license.txt'))
     (ROOT / 'requirements-lock.txt').write_text('\n'.join(f'{k}=={v}' for k,v in versions.items()) + '\n', encoding='utf-8')
-    for name in ['README.md', 'HUONG_DAN_CAI_DAT.md', 'HUONG_DAN_GITHUB.md', 'THIRD_PARTY.md', 'PHIEN_BAN_2.8.0.md']:
+    for name in ['README.md', 'HUONG_DAN_CAI_DAT.md', 'HUONG_DAN_GITHUB.md', 'THIRD_PARTY.md', 'PHIEN_BAN_2.9.0.md']:
         shutil.copy2(ROOT / name, output)
         shutil.copy2(ROOT / name, payload)
     # Whitelist source files: never copy user settings, recordings or logs.
