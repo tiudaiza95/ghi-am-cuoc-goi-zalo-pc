@@ -53,7 +53,7 @@ class WaveformCanvas(tk.Canvas):
         if w <= 1 or h <= 1:
             return
         dark = ctk.get_appearance_mode() == 'Dark'
-        bg_color = '#18181A' if dark else '#EAEAEF'
+        bg_color = '#111114' if dark else '#F2F2F7'
         self.configure(bg=bg_color)
         bar_count = len(self.peaks) if self.peaks else 60
         gap = 2
@@ -66,7 +66,7 @@ class WaveformCanvas(tk.Canvas):
             x1 = x0 + bar_w
             y0 = (h - bar_h) / 2
             y1 = y0 + bar_h
-            color = '#007AFF' if i <= current_idx else ('#48484A' if dark else '#B0B0B8')
+            color = '#007AFF' if i <= current_idx else ('#38383A' if dark else '#D1D1D6')
             self.create_rectangle(x0, y0, x1, y1, fill=color, outline='')
         for m in self.marks:
             mx = m * w
@@ -221,20 +221,29 @@ class LibraryWindow(ManagedToplevel):
         player = ctk.CTkFrame(saved, fg_color=('#F2F2F7', '#111114'), corner_radius=12)
         player.grid(row=1, column=0, columnspan=2, sticky='ew', pady=(10, 0))
         player.grid_columnconfigure(1, weight=1)
-        self.play_button = ctk.CTkButton(player, text='Phát', width=95, command=self.play)
-        self.play_button.grid(row=0, column=0, rowspan=2, padx=8, pady=8)
-        self.waveform = WaveformCanvas(player, height=28, on_seek=self._seek_from_waveform)
-        self.waveform.grid(row=0, column=1, sticky='ew', padx=8, pady=(6, 0))
-        self.seek_bar = ctk.CTkSlider(player, from_=0, to=1, command=self._seek)
+
+        self.play_hint = ctk.CTkLabel(player, text='Chọn một bản ghi để nghe ngay', anchor='w')
+        self.play_hint.configure(wraplength=720, font=('Segoe UI', 12, 'bold'), text_color=('#1C1C1E', '#F5F5F7'))
+        self.play_hint.grid(row=0, column=0, columnspan=3, sticky='ew', padx=14, pady=(8, 4))
+
+        self.play_button = ctk.CTkButton(player, text='Phát', width=95, height=36, corner_radius=10, command=self.play)
+        self.play_button.grid(row=1, column=0, padx=(10, 6), pady=4)
+
+        slider_frame = ctk.CTkFrame(player, fg_color='transparent')
+        slider_frame.grid(row=1, column=1, sticky='ew', padx=6, pady=2)
+        slider_frame.grid_columnconfigure(0, weight=1)
+
+        self.waveform = WaveformCanvas(slider_frame, height=26, on_seek=self._seek_from_waveform)
+        self.waveform.pack(fill='x', pady=(0, 2))
+
+        self.seek_bar = ctk.CTkSlider(slider_frame, from_=0, to=1, height=14, command=self._seek)
         self.seek_bar.bind('<ButtonPress-1>', lambda _: setattr(self, '_dragging_seek', True), add=True)
         self.seek_bar.bind('<ButtonRelease-1>', lambda _: setattr(self, '_dragging_seek', False), add=True)
         self.seek_bar.set(0)
-        self.seek_bar.grid(row=1, column=1, sticky='ew', padx=8, pady=(0, 4))
-        self.play_time = ctk.CTkLabel(player, text='00:00 / 00:00', width=115)
-        self.play_time.grid(row=0, column=2, rowspan=2, padx=8)
-        self.play_hint = ctk.CTkLabel(player, text='Chọn một bản ghi để nghe ngay', anchor='w')
-        self.play_hint.configure(wraplength=720, font=('Segoe UI', 12))
-        self.play_hint.grid(row=1, column=0, columnspan=3, sticky='ew', padx=12, pady=(0, 6))
+        self.seek_bar.pack(fill='x', pady=(2, 0))
+
+        self.play_time = ctk.CTkLabel(player, text='00:00 / 00:00', width=115, font=('Segoe UI', 12))
+        self.play_time.grid(row=1, column=2, padx=(6, 12), pady=4)
 
         transport = ctk.CTkFrame(player, fg_color='transparent')
         transport.grid(row=2, column=0, columnspan=3, sticky='ew', padx=8, pady=(0, 10))
