@@ -97,7 +97,7 @@ class Release29Tests(unittest.TestCase):
         mock_lib = Mock()
         mock_lib.winfo_exists.return_value = True
         app.library = mock_lib
-        app.tray = None
+        app.tray = Mock()
         app.events = Mock()
         app.auto_record = True
         Companion.hide_to_tray(app)
