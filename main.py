@@ -253,6 +253,12 @@ class Companion(ctk.CTk):
 
     def hide_to_tray(self):
         try:
+            if hasattr(self, 'library') and self.library and self.library.winfo_exists():
+                try:
+                    self.library.destroy()
+                except Exception:
+                    pass
+                self.library = None
             if self.tray is None:
                 self.tray = create_tray(self.events, Path(__file__).parent / 'assets' / 'companion.ico')
             self._sync_tray()
@@ -427,6 +433,12 @@ class Companion(ctk.CTk):
             except Exception:
                 pass
             self.mini_overlay = None
+        if hasattr(self, 'library') and self.library and self.library.winfo_exists():
+            try:
+                self.library.destroy()
+            except Exception:
+                pass
+            self.library = None
         if self.tray:
             self.tray.stop()
             self.tray = None
@@ -927,6 +939,12 @@ class Companion(ctk.CTk):
         elif self.recorder.state in ('saving', 'blocked'):
             messagebox.showinfo('Đang lưu', 'Ứng dụng đang lưu bản ghi. Hãy đóng sau khi lưu xong.', parent=self)
         else:
+            if hasattr(self, 'library') and self.library and self.library.winfo_exists():
+                try:
+                    self.library.destroy()
+                except Exception:
+                    pass
+                self.library = None
             if self.pending_popup:
                 self.pending_popup.decline()
             self.persist()

@@ -90,6 +90,20 @@ class Release29Tests(unittest.TestCase):
         finally:
             root.destroy()
 
+    def test_library_sync_close_on_hide_to_tray(self):
+        from unittest.mock import Mock
+        from main import Companion
+        app = Mock()
+        mock_lib = Mock()
+        mock_lib.winfo_exists.return_value = True
+        app.library = mock_lib
+        app.tray = None
+        app.events = Mock()
+        app.auto_record = True
+        Companion.hide_to_tray(app)
+        mock_lib.destroy.assert_called_once()
+        self.assertIsNone(app.library)
+
 
 if __name__ == '__main__':
     unittest.main()

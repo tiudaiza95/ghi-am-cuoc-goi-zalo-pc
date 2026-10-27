@@ -145,6 +145,7 @@ class TrimDialog(ManagedToplevel):
 class LibraryWindow(ManagedToplevel):
     def __init__(self, parent, folder, on_recover):
         super().__init__(parent)
+        self.transient(parent)
         self.owner = parent
         self.player = AudioPlayer()
         self._tick_id = None
